@@ -19,6 +19,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@azure/msal-node": "^5.1.0",
+    "@microsoft/microsoft-graph-client": "^3.0.7",
     "better-sqlite3": "^11.8.1",
     "cron-parser": "^5.5.0",
     "pino": "^9.6.0",

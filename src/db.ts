@@ -73,6 +73,16 @@ function createSchema(database: Database.Database): void {
       group_folder TEXT PRIMARY KEY,
       session_id TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS email_threads (
+      thread_id TEXT PRIMARY KEY,
+      alias TEXT NOT NULL,
+      group_folder TEXT NOT NULL,
+      subject TEXT,
+      last_message_id TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_email_threads_alias ON email_threads(alias);
+
     CREATE TABLE IF NOT EXISTS registered_groups (
       jid TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -135,6 +145,9 @@ function createSchema(database: Database.Database): void {
     );
     database.exec(
       `UPDATE chats SET channel = 'telegram', is_group = 1 WHERE jid LIKE 'tg:%'`,
+    );
+    database.exec(
+      `UPDATE chats SET channel = 'outlook', is_group = 0 WHERE jid LIKE 'outlook:%'`,
     );
   } catch {
     /* columns already exist */
@@ -632,6 +645,40 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     };
   }
   return result;
+}
+
+// --- Email thread accessors ---
+
+export interface EmailThreadRow {
+  thread_id: string;
+  alias: string;
+  group_folder: string;
+  subject: string | null;
+  last_message_id: string | null;
+  created_at: string;
+}
+
+export function getEmailThread(threadId: string): EmailThreadRow | undefined {
+  return db
+    .prepare('SELECT * FROM email_threads WHERE thread_id = ?')
+    .get(threadId) as EmailThreadRow | undefined;
+}
+
+export function upsertEmailThread(thread: EmailThreadRow): void {
+  db.prepare(
+    `INSERT INTO email_threads (thread_id, alias, group_folder, subject, last_message_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(thread_id) DO UPDATE SET
+       last_message_id = excluded.last_message_id,
+       subject = COALESCE(excluded.subject, subject)`,
+  ).run(
+    thread.thread_id,
+    thread.alias,
+    thread.group_folder,
+    thread.subject,
+    thread.last_message_id,
+    thread.created_at,
+  );
 }
 
 // --- JSON migration ---

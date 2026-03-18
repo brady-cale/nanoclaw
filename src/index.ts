@@ -31,6 +31,7 @@ import {
   getAllRegisteredGroups,
   getAllSessions,
   getAllTasks,
+  getEmailThread,
   getMessagesSince,
   getNewMessages,
   getRegisteredGroup,
@@ -41,7 +42,9 @@ import {
   setSession,
   storeChatMetadata,
   storeMessage,
+  upsertEmailThread,
 } from './db.js';
+import { startOutlookLoop } from './outlook.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
@@ -648,6 +651,44 @@ async function main(): Promise<void> {
       }
     },
   });
+  // Start Outlook email polling loop (if M365 configured)
+  startOutlookLoop({
+    storeMessage,
+    storeChatMetadata,
+    registerGroup,
+    registeredGroups: () => registeredGroups,
+    runEmailAgent: async (groupFolder, chatJid, prompt) => {
+      const group = registeredGroups[chatJid];
+      if (!group) return null;
+      let resultText = '';
+      await runAgent(group, prompt, chatJid, async (output) => {
+        if (output.result) {
+          const raw =
+            typeof output.result === 'string'
+              ? output.result
+              : JSON.stringify(output.result);
+          const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+          if (text) resultText += text + '\n';
+        }
+      });
+      return resultText.trim() || null;
+    },
+    sendToMainChannel: async (text) => {
+      const mainEntry = Object.entries(registeredGroups).find(
+        ([, g]) => g.isMain,
+      );
+      if (!mainEntry) return;
+      const [mainJid] = mainEntry;
+      const channel = findChannel(channels, mainJid);
+      if (channel) {
+        const outbound = formatOutbound(text);
+        if (outbound) await channel.sendMessage(mainJid, outbound);
+      }
+    },
+    getEmailThread,
+    upsertEmailThread,
+  }).catch((err) => logger.error({ err }, 'Outlook loop failed to start'));
+
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
   startMessageLoop().catch((err) => {
