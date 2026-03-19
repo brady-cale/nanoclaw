@@ -250,9 +250,7 @@ function formatEmailAsPrompt(
 
   // Reply instructions
   lines.push('\n---');
-  lines.push(
-    `To reply to this email, use the draft_outlook_email tool with:`,
-  );
+  lines.push(`To reply to this email, use the draft_outlook_email tool with:`);
   lines.push(`- from_alias: ${alias}`);
   lines.push(`- to: ${msg.from.emailAddress.address}`);
   const ccAddrs = [...msg.toRecipients, ...msg.ccRecipients]
@@ -360,7 +358,12 @@ export async function draftOutlookEmail(params: {
   const draft = await graphPost<{ id: string }>('/me/messages', message);
 
   logger.info(
-    { from: params.fromAlias, to: params.to, subject: params.subject, draftId: draft.id },
+    {
+      from: params.fromAlias,
+      to: params.to,
+      subject: params.subject,
+      draftId: draft.id,
+    },
     'Saved Outlook draft',
   );
 
@@ -624,7 +627,9 @@ export async function startOutlookLoop(opts: OutlookLoopOpts): Promise<void> {
           // Exclude the current message, sort by date ascending (client-side)
           threadMessages = (threadResult.value || [])
             .filter((tm) => tm.id !== msg.id)
-            .sort((a, b) => a.receivedDateTime.localeCompare(b.receivedDateTime));
+            .sort((a, b) =>
+              a.receivedDateTime.localeCompare(b.receivedDateTime),
+            );
         } catch (err) {
           logger.warn(
             { conversationId: msg.conversationId, err },

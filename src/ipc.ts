@@ -102,10 +102,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     'IPC outlook email draft failed',
                   );
                 }
-              } else if (
-                data.type === 'search_emails' &&
-                data.requestId
-              ) {
+              } else if (data.type === 'search_emails' && data.requestId) {
                 // Search emails via Graph API and write response file
                 try {
                   const results = await searchOutlookEmails({
