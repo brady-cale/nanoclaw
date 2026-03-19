@@ -1,3 +1,4 @@
+import { ASSISTANT_NAME } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
 import { hasM365Credentials, graphGet, graphPost } from '../m365-auth.js';
@@ -63,6 +64,7 @@ class TeamsChannel implements Channel {
   private userNameCache = new Map<string, string>();
   private mode: 'discover' | 'registered';
   private pollMs: number;
+  private assistantName: string;
 
   constructor(opts: ChannelOpts) {
     this.opts = opts;
@@ -70,6 +72,7 @@ class TeamsChannel implements Channel {
     this.mode =
       env.M365_TEAMS_MODE === 'registered' ? 'registered' : 'discover';
     this.pollMs = parseInt(env.M365_TEAMS_POLL_INTERVAL || '15000', 10);
+    this.assistantName = ASSISTANT_NAME;
   }
 
   async connect(): Promise<void> {
@@ -98,8 +101,9 @@ class TeamsChannel implements Channel {
 
   async sendMessage(jid: string, text: string): Promise<void> {
     const chatId = fromJid(jid);
+    const prefixed = `🤖 **${this.assistantName}:** ${text}`;
     await graphPost(`/me/chats/${chatId}/messages`, {
-      body: { contentType: 'text', content: text },
+      body: { contentType: 'text', content: prefixed },
     });
   }
 
