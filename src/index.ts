@@ -667,7 +667,9 @@ async function main(): Promise<void> {
             typeof output.result === 'string'
               ? output.result
               : JSON.stringify(output.result);
-          const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+          const text = raw
+            .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+            .trim();
           if (text) resultText += text + '\n';
         }
       });

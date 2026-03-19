@@ -67,7 +67,8 @@ class TeamsChannel implements Channel {
   constructor(opts: ChannelOpts) {
     this.opts = opts;
     const env = readEnvFile(['M365_TEAMS_MODE', 'M365_TEAMS_POLL_INTERVAL']);
-    this.mode = env.M365_TEAMS_MODE === 'registered' ? 'registered' : 'discover';
+    this.mode =
+      env.M365_TEAMS_MODE === 'registered' ? 'registered' : 'discover';
     this.pollMs = parseInt(env.M365_TEAMS_POLL_INTERVAL || '15000', 10);
   }
 
@@ -84,9 +85,7 @@ class TeamsChannel implements Channel {
 
       // Start polling
       this.pollInterval = setInterval(() => {
-        this.poll().catch((err) =>
-          logger.error({ err }, 'Teams poll error'),
-        );
+        this.poll().catch((err) => logger.error({ err }, 'Teams poll error'));
       }, this.pollMs);
 
       // Initial poll
@@ -126,8 +125,7 @@ class TeamsChannel implements Channel {
       const chats = await this.listChats();
       for (const chat of chats) {
         const jid = toJid(chat.id);
-        const name =
-          chat.topic || `Teams ${chat.chatType} chat`;
+        const name = chat.topic || `Teams ${chat.chatType} chat`;
         const isGroup = chat.chatType !== 'oneOnOne';
         this.opts.onChatMetadata(
           jid,
@@ -143,9 +141,7 @@ class TeamsChannel implements Channel {
   }
 
   private async listChats(): Promise<TeamsChat[]> {
-    const result = await graphGet<{ value: TeamsChat[] }>(
-      '/me/chats?$top=50',
-    );
+    const result = await graphGet<{ value: TeamsChat[] }>('/me/chats?$top=50');
     return result.value || [];
   }
 
@@ -171,7 +167,10 @@ class TeamsChannel implements Channel {
             const chat = await graphGet<TeamsChat>(`/me/chats/${chatId}`);
             chats.push(chat);
           } catch (err) {
-            logger.warn({ chatId, err }, 'Failed to fetch registered Teams chat');
+            logger.warn(
+              { chatId, err },
+              'Failed to fetch registered Teams chat',
+            );
           }
         }
       } else {
@@ -214,14 +213,10 @@ class TeamsChannel implements Channel {
       // Skip system messages
       if (msg.messageType !== 'message') continue;
 
-      // Skip our own messages — unless this is the main group (self-chat for commands)
       const isFromMe = msg.from?.user?.id === this.selfUserId;
-      if (isFromMe) {
-        const group = this.opts.registeredGroups()[jid];
-        if (!group?.isMain) continue;
-      }
 
-      const senderId = msg.from?.user?.id || msg.from?.application?.id || 'unknown';
+      const senderId =
+        msg.from?.user?.id || msg.from?.application?.id || 'unknown';
       const senderName =
         msg.from?.user?.displayName ||
         msg.from?.application?.displayName ||

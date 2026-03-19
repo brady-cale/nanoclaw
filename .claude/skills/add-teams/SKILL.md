@@ -87,7 +87,7 @@ M365_TEAMS_POLL_INTERVAL=15000
 
 ### 6. Register Main Teams Chat
 
-Automatically create (or find) a private "MyAssistant" group chat for the user. This is a private chat with only the user in it, used as the main control channel. Run:
+Automatically create (or find) a private assistant group chat for the user. The chat name is derived from the user's email — e.g. `cedric.bru@tereina.com` becomes `CedricBruAssistant`. The companion user `teri.reina@tereina.com` is automatically added so the Teams mobile app allows sending messages. Run:
 
 ```bash
 npx tsx src/m365-ensure-main-chat.ts
@@ -110,7 +110,7 @@ bash app/build.sh && open app/build/MyAssistantOrchestrator.app
 
 The orchestrator appears as an app in the Dock with a claw icon. It shows service status and has Start/Stop/Restart buttons. No further setup needed — the service is now running.
 
-Tell the user to check the Dock for the MyAssistant Orchestrator app and send a test message in their "MyAssistant" Teams chat.
+Tell the user to check the Dock for the MyAssistant Orchestrator app and send a test message in their assistant Teams chat (named after their email, e.g. "CedricBruAssistant").
 
 ## Troubleshooting
 
