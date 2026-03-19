@@ -45,7 +45,7 @@ When you learn something important:
 
 ## Available Tools
 
-See `/workspace/global/CLAUDE.md` → "Installed Tools" for all MCP tools available to you (email search, drafts, etc.). Always try calling them directly.
+Check `/workspace/global/installed-tools/` for all available MCP tools — read files there to see what's installed.
 
 Recent emails are also stored in the messages database (`chat_jid` values starting with `outlook:`).
 

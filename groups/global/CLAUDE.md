@@ -57,12 +57,7 @@ Emails appear in the `messages` table with `chat_jid` values like `outlook:...`.
 
 ## Installed Tools
 
-These MCP tools are available to all agents via the `mcp__nanoclaw__` prefix. Always try calling them — do not tell the user to set something up.
-
-### Outlook (email)
-
-- **`mcp__nanoclaw__search_emails`** — Search Outlook emails in real-time via Microsoft Graph API. Supports `query` (free-text), `from`, `subject`, `after`/`before` (ISO dates), and `top` (max results, default 20, max 50).
-- **`mcp__nanoclaw__draft_outlook_email`** — Save a draft email reply in Outlook. NEVER send emails directly — always draft. Requires `from_alias`, `to`, `subject`, `body`, and optionally `in_reply_to` and `conversation_id` for threading.
+Additional tools may be installed via `/add-X` skills. Check `/workspace/global/installed-tools/` for documentation on each installed tool. Read the files there to learn what's available. Always try calling tools directly — if a backend isn't configured, you'll get a clear error.
 
 ## Your Workspace
 
@@ -79,10 +74,4 @@ When you learn something important:
 
 ## Message Formatting
 
-NEVER use markdown. Only use WhatsApp/Telegram formatting:
-- *single asterisks* for bold (NEVER **double asterisks**)
-- _underscores_ for italic
-- • bullet points
-- ```triple backticks``` for code
-
-No ## headings. No [links](url). No **double stars**.
+Each group's CLAUDE.md specifies its own formatting rules. Follow the group-specific rules, not a default.

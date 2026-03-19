@@ -8,6 +8,40 @@ import { ChannelOpts, registerChannel } from './registry.js';
 
 const JID_PREFIX = 'teams:';
 
+/** Convert simple markdown to Teams-compatible HTML */
+function markdownToTeamsHtml(md: string): string {
+  let html = md
+    // Escape HTML entities first
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    // Code blocks (``` ... ```) — must come before inline code
+    .replace(/```([\s\S]*?)```/g, '<pre>$1</pre>')
+    // Inline code
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    // Bold (**text** or __text__)
+    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+    .replace(/__(.+?)__/g, '<b>$1</b>')
+    // Italic (*text* or _text_) — careful not to match inside bold
+    .replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<i>$1</i>')
+    .replace(/(?<!_)_([^_]+)_(?!_)/g, '<i>$1</i>')
+    // Bullet lists (- item or • item)
+    .replace(/^[\-•]\s+(.+)$/gm, '<li>$1</li>')
+    // Newlines to <br>
+    .replace(/\n/g, '<br>');
+
+  // Wrap consecutive <li> in <ul>
+  html = html.replace(/((?:<li>.*?<\/li>(?:<br>)?)+)/g, (match) => {
+    const cleaned = match.replace(/<br>/g, '');
+    return `<ul>${cleaned}</ul>`;
+  });
+
+  // Remove --- horizontal rules (Teams doesn't render them)
+  html = html.replace(/(?:<br>)?-{3,}(?:<br>)?/g, '<br>');
+
+  return html;
+}
+
 interface TeamsMessage {
   id: string;
   createdDateTime: string;
@@ -101,9 +135,10 @@ class TeamsChannel implements Channel {
 
   async sendMessage(jid: string, text: string): Promise<void> {
     const chatId = fromJid(jid);
-    const prefixed = `🤖 **${this.assistantName}:** ${text}`;
+    const html = markdownToTeamsHtml(text);
+    const prefixed = `🤖 <b>${this.assistantName}:</b> ${html}`;
     await graphPost(`/me/chats/${chatId}/messages`, {
-      body: { contentType: 'text', content: prefixed },
+      body: { contentType: 'html', content: prefixed },
     });
   }
 

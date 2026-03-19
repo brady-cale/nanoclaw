@@ -95,11 +95,25 @@ npx tsx src/m365-ensure-main-chat.ts
 
 The script prints the chat ID. Register it as the main group with JID `teams:{chatId}`, folder `teams_main`, and `isMain: true`, `requiresTrigger: false`.
 
-### 7. Create Group CLAUDE.md
+### 7. Register Installed Tools (if applicable)
 
-Create `groups/{folder}/CLAUDE.md` with default Teams agent instructions. Follow the pattern from `groups/main/CLAUDE.md` but adapt for Teams formatting (Teams supports markdown).
+If Teams adds MCP tools beyond the core set (send_message, schedule_task, etc.), create `groups/global/installed-tools/teams.md` with tool documentation. If no Teams-specific tools are added, skip this step.
 
-### 8. Build and Start the Orchestrator
+This directory is NOT tracked in git — it's local to each install. Agents discover available tools by reading files in `/workspace/global/installed-tools/`.
+
+### 8. Create Group CLAUDE.md
+
+Create `groups/{folder}/CLAUDE.md` with Teams agent instructions. Follow the pattern from `groups/main/CLAUDE.md` but adapt for Teams formatting (Teams supports markdown). Include a pointer for tool discovery:
+
+```markdown
+## Available Tools
+
+Check `/workspace/global/installed-tools/` for all available MCP tools — read files there to see what's installed.
+```
+
+Do NOT duplicate tool documentation in the per-group file.
+
+### 9. Build and Start the Orchestrator
 
 Build the project and the MyAssistantOrchestrator app. This is the shared service that runs Teams, Outlook, and any future integrations.
 

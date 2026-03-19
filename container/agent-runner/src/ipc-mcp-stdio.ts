@@ -335,14 +335,14 @@ Use available_groups.json to find the JID for a group. The folder name must be c
 
 server.tool(
   'draft_outlook_email',
-  `Save a draft email reply in Outlook. The user will review and send it themselves. NEVER send emails directly — always use this to create drafts.`,
+  `Save a draft email reply in Outlook. The user will review and send it themselves. NEVER send emails directly — always use this to create drafts. When in_reply_to is provided, the draft is created as a proper reply with full conversation history preserved.`,
   {
     from_alias: z.string().describe('Your alias email address (the one the email was sent to)'),
     to: z.array(z.string()).describe('Recipient email addresses'),
     cc: z.array(z.string()).optional().describe('CC email addresses'),
     subject: z.string().describe('Email subject (use "Re: ..." for replies)'),
-    body: z.string().describe('Email body text (plain text)'),
-    in_reply_to: z.string().optional().describe('Message-ID of the email being replied to (for threading)'),
+    body: z.string().describe('Email body text (plain text). For replies, this is just your new reply text — the conversation history is included automatically.'),
+    in_reply_to: z.string().optional().describe('Graph message ID of the email being replied to (provided in the prompt as in_reply_to). Enables proper reply threading with conversation history.'),
     conversation_id: z.string().optional().describe('Conversation ID for email thread grouping'),
   },
   async (args) => {
@@ -362,6 +362,49 @@ server.tool(
     writeIpcFile(MESSAGES_DIR, data);
 
     return { content: [{ type: 'text' as const, text: `Draft saved for ${args.to.join(', ')} with subject "${args.subject}". The user will review and send it.` }] };
+  },
+);
+
+server.tool(
+  'archive_email',
+  `Archive an email by moving it out of the inbox. Use this after drafting a reply to clean up the inbox. Always ask the user first before archiving.`,
+  {
+    message_id: z.string().describe('Graph message ID of the email to archive (same as in_reply_to)'),
+  },
+  async (args) => {
+    const requestId = `archive-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const data = {
+      type: 'archive_email',
+      requestId,
+      messageId: args.message_id,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    // Poll for response
+    const RESPONSES = path.join(IPC_DIR, 'responses');
+    const responseFile = path.join(RESPONSES, `${requestId}.json`);
+    const timeout = 15000;
+    const interval = 500;
+    const start = Date.now();
+
+    while (Date.now() - start < timeout) {
+      if (fs.existsSync(responseFile)) {
+        try {
+          const response = JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
+          try { fs.unlinkSync(responseFile); } catch {}
+          if (response.error) {
+            return { content: [{ type: 'text' as const, text: `Archive failed: ${response.error}` }], isError: true };
+          }
+          return { content: [{ type: 'text' as const, text: 'Email archived.' }] };
+        } catch { /* partial write, retry */ }
+      }
+      await new Promise((resolve) => setTimeout(resolve, interval));
+    }
+
+    return { content: [{ type: 'text' as const, text: 'Archive request timed out.' }], isError: true };
   },
 );
 

@@ -57,15 +57,23 @@ This merges in:
 
 If the merge reports conflicts, resolve them by reading the conflicted files and understanding the intent of both sides.
 
-### Add email handling instructions (Channel mode only)
+### Register Installed Tools
 
-If the user chose channel mode, append the following to `groups/main/CLAUDE.md` (before the formatting section):
+Create `groups/global/installed-tools/gmail.md` with tool documentation:
 
 ```markdown
-## Email Notifications
+# Gmail
 
-When you receive an email notification (messages starting with `[Email from ...`), inform the user about it but do NOT reply to the email unless specifically asked. You have Gmail tools available — use them only when the user explicitly asks you to reply, forward, or take action on an email.
+Gmail tools are available via the `mcp__gmail__*` prefix. Use them only when the user explicitly asks to reply, forward, or take action on an email.
 ```
+
+If the user chose **channel mode**, also add:
+
+```markdown
+**Channel mode:** Email notifications arrive as messages starting with `[Email from ...]`. Inform the user about them but do NOT reply unless specifically asked.
+```
+
+This directory is NOT tracked in git — it's local to each install. Agents discover available tools by reading files in `/workspace/global/installed-tools/`.
 
 ### Validate code changes
 

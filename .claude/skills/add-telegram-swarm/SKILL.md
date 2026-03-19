@@ -261,7 +261,15 @@ In any group CLAUDE.md that has a "WhatsApp Formatting" section (e.g. `groups/ma
 
 #### 5c. Add Agent Teams instructions to Telegram groups
 
-For each Telegram group that will use agent teams, create or update its `groups/{folder}/CLAUDE.md` with these instructions. Read the existing CLAUDE.md first (or `groups/global/CLAUDE.md` as a base) and add the Agent Teams section:
+For each Telegram group that will use agent teams, create or update its `groups/{folder}/CLAUDE.md` with these instructions. Read the existing CLAUDE.md first (or `groups/global/CLAUDE.md` as a base) and add the Agent Teams section. Do NOT duplicate tool documentation — instead include a pointer to global:
+
+```markdown
+## Available Tools
+
+Check `/workspace/global/installed-tools/` for all available MCP tools — read files there to see what's installed.
+```
+
+Then add the Agent Teams section:
 
 ```markdown
 ## Agent Teams

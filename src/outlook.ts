@@ -264,7 +264,7 @@ function formatEmailAsPrompt(
     lines.push(`- cc: ${ccAddrs.join(', ')}`);
   }
   lines.push(`- subject: Re: ${msg.subject.replace(/^Re:\s*/i, '')}`);
-  lines.push(`- in_reply_to: ${msg.internetMessageId}`);
+  lines.push(`- in_reply_to: ${msg.id}`);
   lines.push(`- conversation_id: ${msg.conversationId}`);
 
   return lines.join('\n');
@@ -281,6 +281,20 @@ export async function sendOutlookEmail(params: {
   inReplyTo?: string;
   conversationId?: string;
 }): Promise<void> {
+  // If replying to an existing message, use the reply endpoint to preserve thread history
+  if (params.inReplyTo) {
+    await graphPost(`/me/messages/${params.inReplyTo}/reply`, {
+      comment: params.body,
+    });
+
+    logger.info(
+      { from: params.fromAlias, to: params.to, subject: params.subject, replyTo: params.inReplyTo },
+      'Sent Outlook reply (with thread history)',
+    );
+    return;
+  }
+
+  // New message (not a reply)
   const message: Record<string, unknown> = {
     subject: params.subject,
     body: { contentType: 'text', content: params.body },
@@ -296,12 +310,6 @@ export async function sendOutlookEmail(params: {
     message.ccRecipients = params.cc.map((addr) => ({
       emailAddress: { address: addr },
     }));
-  }
-
-  if (params.inReplyTo) {
-    message.internetMessageHeaders = [
-      { name: 'In-Reply-To', value: params.inReplyTo },
-    ];
   }
 
   if (params.conversationId) {
@@ -328,6 +336,28 @@ export async function draftOutlookEmail(params: {
   inReplyTo?: string;
   conversationId?: string;
 }): Promise<string> {
+  // If replying, use createReply to preserve thread history
+  if (params.inReplyTo) {
+    const replyDraft = await graphPost<{ id: string }>(
+      `/me/messages/${params.inReplyTo}/createReply`,
+      { comment: params.body },
+    );
+
+    logger.info(
+      {
+        from: params.fromAlias,
+        to: params.to,
+        subject: params.subject,
+        draftId: replyDraft.id,
+        replyTo: params.inReplyTo,
+      },
+      'Saved Outlook reply draft (with thread history)',
+    );
+
+    return replyDraft.id;
+  }
+
+  // New message (not a reply)
   const message: Record<string, unknown> = {
     subject: params.subject,
     body: { contentType: 'text', content: params.body },
@@ -343,12 +373,6 @@ export async function draftOutlookEmail(params: {
     message.ccRecipients = params.cc.map((addr) => ({
       emailAddress: { address: addr },
     }));
-  }
-
-  if (params.inReplyTo) {
-    message.internetMessageHeaders = [
-      { name: 'In-Reply-To', value: params.inReplyTo },
-    ];
   }
 
   if (params.conversationId) {
@@ -508,61 +532,70 @@ export async function startOutlookLoop(opts: OutlookLoopOpts): Promise<void> {
   // Set to track processed message IDs (prevents reprocessing within a session)
   const processedIds = new Set<string>();
 
-  // Backfill recent emails so the DB isn't empty on first run
+  // Backfill recent emails so the DB isn't empty on first run (paginated)
   try {
     const sevenDaysAgo = new Date(
       Date.now() - 7 * 24 * 60 * 60 * 1000,
     ).toISOString();
-    const backfillResult = await graphGet<{ value: OutlookMessage[] }>(
-      `/me/messages?$filter=receivedDateTime ge ${sevenDaysAgo}&$top=200&$orderby=receivedDateTime asc&$select=id,conversationId,internetMessageId,subject,bodyPreview,body,from,toRecipients,ccRecipients,receivedDateTime,isRead,parentFolderId`,
-    );
-    const backfillMessages = backfillResult.value || [];
     let backfillCount = 0;
+    let nextUrl: string | undefined =
+      `/me/messages?$filter=receivedDateTime ge ${sevenDaysAgo}&$top=200&$orderby=receivedDateTime asc&$select=id,conversationId,internetMessageId,subject,bodyPreview,body,from,toRecipients,ccRecipients,receivedDateTime,isRead,parentFolderId`;
 
-    for (const msg of backfillMessages) {
-      processedIds.add(msg.id); // Prevent pollInbox from re-triggering agent
+    while (nextUrl) {
+      const backfillResult: {
+        value: OutlookMessage[];
+        '@odata.nextLink'?: string;
+      } = await graphGet(nextUrl);
+      const backfillMessages = backfillResult.value || [];
 
-      const aliasMatch = classifyByAlias(msg, aliases);
-      if (!aliasMatch && mode === 'alias') continue;
+      for (const msg of backfillMessages) {
+        processedIds.add(msg.id); // Prevent pollInbox from re-triggering agent
 
-      const targetAlias = aliasMatch?.alias || 'default';
-      const chatJid = aliasMatch
-        ? outlookJid(aliasMatch.alias)
-        : defaultOutlookJid();
+        const aliasMatch = classifyByAlias(msg, aliases);
+        if (!aliasMatch && mode === 'alias') continue;
 
-      // Track thread
-      let thread = opts.getEmailThread(msg.conversationId);
-      if (!thread) {
-        thread = {
-          thread_id: msg.conversationId,
-          alias: targetAlias,
-          group_folder: aliasMatch?.groupFolder || defaultGroup,
-          subject: msg.subject,
-          last_message_id: msg.internetMessageId,
-          created_at: new Date().toISOString(),
-        };
-        opts.upsertEmailThread(thread);
+        const targetAlias = aliasMatch?.alias || 'default';
+        const chatJid = aliasMatch
+          ? outlookJid(aliasMatch.alias)
+          : defaultOutlookJid();
+
+        // Track thread
+        let thread = opts.getEmailThread(msg.conversationId);
+        if (!thread) {
+          thread = {
+            thread_id: msg.conversationId,
+            alias: targetAlias,
+            group_folder: aliasMatch?.groupFolder || defaultGroup,
+            subject: msg.subject,
+            last_message_id: msg.internetMessageId,
+            created_at: new Date().toISOString(),
+          };
+          opts.upsertEmailThread(thread);
+        }
+
+        // Ensure chat exists before storing message (FK constraint)
+        opts.storeChatMetadata(
+          chatJid,
+          msg.receivedDateTime,
+          `Outlook ${targetAlias}`,
+          'outlook',
+          false,
+        );
+        opts.storeMessage({
+          id: msg.id,
+          chat_jid: chatJid,
+          sender: msg.from.emailAddress.address,
+          sender_name: msg.from.emailAddress.name,
+          content: `[Email] ${msg.subject}\n\n${msg.bodyPreview}`,
+          timestamp: msg.receivedDateTime,
+          is_from_me: false,
+          is_bot_message: false,
+        });
+        backfillCount++;
       }
 
-      // Store in DB (history only, no agent run)
-      opts.storeMessage({
-        id: msg.id,
-        chat_jid: chatJid,
-        sender: msg.from.emailAddress.address,
-        sender_name: msg.from.emailAddress.name,
-        content: `[Email] ${msg.subject}\n\n${msg.bodyPreview}`,
-        timestamp: msg.receivedDateTime,
-        is_from_me: false,
-        is_bot_message: false,
-      });
-      opts.storeChatMetadata(
-        chatJid,
-        msg.receivedDateTime,
-        `Outlook ${targetAlias}`,
-        'outlook',
-        false,
-      );
-      backfillCount++;
+      // Follow pagination link if there are more results
+      nextUrl = backfillResult['@odata.nextLink'];
     }
 
     if (backfillCount > 0) {
@@ -651,7 +684,7 @@ export async function startOutlookLoop(opts: OutlookLoopOpts): Promise<void> {
           is_from_me: false,
           is_bot_message: false,
         };
-        opts.storeMessage(storedMsg);
+        // Ensure chat exists before storing message (FK constraint)
         opts.storeChatMetadata(
           chatJid,
           msg.receivedDateTime,
@@ -659,6 +692,7 @@ export async function startOutlookLoop(opts: OutlookLoopOpts): Promise<void> {
           'outlook',
           false,
         );
+        opts.storeMessage(storedMsg);
 
         // Run agent with fresh session
         try {

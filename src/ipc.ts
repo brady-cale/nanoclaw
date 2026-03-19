@@ -102,6 +102,29 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     'IPC outlook email draft failed',
                   );
                 }
+              } else if (data.type === 'archive_email' && data.requestId) {
+                // Archive email by moving to Archive folder
+                try {
+                  const { graphPost } = await import('./m365-auth.js');
+                  await graphPost(
+                    `/me/messages/${data.messageId}/move`,
+                    { destinationId: 'archive' },
+                  );
+                  const responsesDir = path.join(ipcBaseDir, sourceGroup, 'responses');
+                  fs.mkdirSync(responsesDir, { recursive: true });
+                  const responseFile = path.join(responsesDir, `${data.requestId}.json`);
+                  fs.writeFileSync(responseFile, JSON.stringify({ requestId: data.requestId, success: true }));
+                  logger.info({ sourceGroup, messageId: data.messageId }, 'IPC email archived');
+                } catch (err) {
+                  const responsesDir = path.join(ipcBaseDir, sourceGroup, 'responses');
+                  fs.mkdirSync(responsesDir, { recursive: true });
+                  const responseFile = path.join(responsesDir, `${data.requestId}.json`);
+                  fs.writeFileSync(responseFile, JSON.stringify({
+                    requestId: data.requestId,
+                    error: err instanceof Error ? err.message : String(err),
+                  }));
+                  logger.error({ sourceGroup, messageId: data.messageId, err }, 'IPC email archive failed');
+                }
               } else if (data.type === 'search_emails' && data.requestId) {
                 // Search emails via Graph API and write response file
                 try {

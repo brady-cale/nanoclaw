@@ -122,24 +122,18 @@ If mode is "all", also configure:
 M365_OUTLOOK_DEFAULT_GROUP=email-default
 ```
 
-### 7. Register Tools in Global CLAUDE.md
+### 7. Register Installed Tools
 
-Add the Outlook tools to the `## Installed Tools` section of `groups/global/CLAUDE.md`. If the section doesn't exist, create it. This is the single source of truth for all MCP tools — agents in every group read it.
+Create `groups/global/installed-tools/outlook.md` with tool documentation:
 
 ```markdown
-### Outlook (email)
+# Outlook (email)
 
 - **`mcp__nanoclaw__search_emails`** — Search Outlook emails in real-time via Microsoft Graph API. Supports `query` (free-text), `from`, `subject`, `after`/`before` (ISO dates), and `top` (max results, default 20, max 50).
 - **`mcp__nanoclaw__draft_outlook_email`** — Save a draft email reply in Outlook. NEVER send emails directly — always draft. Requires `from_alias`, `to`, `subject`, `body`, and optionally `in_reply_to` and `conversation_id` for threading.
 ```
 
-Do NOT duplicate tool docs in per-group CLAUDE.md files. Instead, add a one-liner pointing to global:
-
-```markdown
-## Available Tools
-
-See `/workspace/global/CLAUDE.md` → "Installed Tools" for all MCP tools available to you.
-```
+This directory is NOT tracked in git — it's local to each install. Agents discover available tools by reading files in `/workspace/global/installed-tools/`.
 
 ### 8. Create Group CLAUDE.md Files
 
@@ -152,7 +146,7 @@ You handle emails sent to {alias}. You are an email agent with access to the ema
 
 ## Available Tools
 
-See `/workspace/global/CLAUDE.md` → "Installed Tools" for all MCP tools. Use `mcp__nanoclaw__search_emails` to look up prior emails and `mcp__nanoclaw__draft_outlook_email` to draft replies.
+Check `/workspace/global/installed-tools/` for all available MCP tools — read files there to see what's installed.
 
 ## Rules
 
