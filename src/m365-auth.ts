@@ -80,6 +80,7 @@ function persistCache(): void {
 
 // Delegated scopes (not /.default — that's for client credentials only)
 const GRAPH_SCOPES = [
+  'Calendars.ReadWrite',
   'Chat.ReadWrite',
   'ChannelMessage.Read.All',
   'ChannelMessage.Send',

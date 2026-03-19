@@ -8,6 +8,11 @@ import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
+import {
+  searchCalendarEvents,
+  createCalendarEvent,
+  updateCalendarEvent,
+} from './calendar.js';
 import { draftOutlookEmail, searchOutlookEmails } from './outlook.js';
 import { RegisteredGroup } from './types.js';
 
@@ -106,24 +111,52 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 // Archive email by moving to Archive folder
                 try {
                   const { graphPost } = await import('./m365-auth.js');
-                  await graphPost(
-                    `/me/messages/${data.messageId}/move`,
-                    { destinationId: 'archive' },
+                  await graphPost(`/me/messages/${data.messageId}/move`, {
+                    destinationId: 'archive',
+                  });
+                  const responsesDir = path.join(
+                    ipcBaseDir,
+                    sourceGroup,
+                    'responses',
                   );
-                  const responsesDir = path.join(ipcBaseDir, sourceGroup, 'responses');
                   fs.mkdirSync(responsesDir, { recursive: true });
-                  const responseFile = path.join(responsesDir, `${data.requestId}.json`);
-                  fs.writeFileSync(responseFile, JSON.stringify({ requestId: data.requestId, success: true }));
-                  logger.info({ sourceGroup, messageId: data.messageId }, 'IPC email archived');
+                  const responseFile = path.join(
+                    responsesDir,
+                    `${data.requestId}.json`,
+                  );
+                  fs.writeFileSync(
+                    responseFile,
+                    JSON.stringify({
+                      requestId: data.requestId,
+                      success: true,
+                    }),
+                  );
+                  logger.info(
+                    { sourceGroup, messageId: data.messageId },
+                    'IPC email archived',
+                  );
                 } catch (err) {
-                  const responsesDir = path.join(ipcBaseDir, sourceGroup, 'responses');
+                  const responsesDir = path.join(
+                    ipcBaseDir,
+                    sourceGroup,
+                    'responses',
+                  );
                   fs.mkdirSync(responsesDir, { recursive: true });
-                  const responseFile = path.join(responsesDir, `${data.requestId}.json`);
-                  fs.writeFileSync(responseFile, JSON.stringify({
-                    requestId: data.requestId,
-                    error: err instanceof Error ? err.message : String(err),
-                  }));
-                  logger.error({ sourceGroup, messageId: data.messageId, err }, 'IPC email archive failed');
+                  const responseFile = path.join(
+                    responsesDir,
+                    `${data.requestId}.json`,
+                  );
+                  fs.writeFileSync(
+                    responseFile,
+                    JSON.stringify({
+                      requestId: data.requestId,
+                      error: err instanceof Error ? err.message : String(err),
+                    }),
+                  );
+                  logger.error(
+                    { sourceGroup, messageId: data.messageId, err },
+                    'IPC email archive failed',
+                  );
                 }
               } else if (data.type === 'search_emails' && data.requestId) {
                 // Search emails via Graph API and write response file
@@ -192,6 +225,128 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       totalCount: 0,
                       error: err instanceof Error ? err.message : String(err),
                     }),
+                  );
+                }
+              } else if (
+                data.type === 'search_calendar' &&
+                data.requestId
+              ) {
+                try {
+                  const results = await searchCalendarEvents({
+                    after: data.after,
+                    before: data.before,
+                    query: data.query,
+                    attendee: data.attendee,
+                    top: data.top ? parseInt(data.top, 10) : undefined,
+                  });
+                  const responsesDir = path.join(
+                    ipcBaseDir,
+                    sourceGroup,
+                    'responses',
+                  );
+                  fs.mkdirSync(responsesDir, { recursive: true });
+                  const responseFile = path.join(
+                    responsesDir,
+                    `${data.requestId}.json`,
+                  );
+                  const tempFile = `${responseFile}.tmp`;
+                  fs.writeFileSync(
+                    tempFile,
+                    JSON.stringify(
+                      { requestId: data.requestId, results, totalCount: results.length },
+                      null,
+                      2,
+                    ),
+                  );
+                  fs.renameSync(tempFile, responseFile);
+                  logger.info(
+                    { sourceGroup, requestId: data.requestId, resultCount: results.length },
+                    'IPC calendar search completed',
+                  );
+                } catch (err) {
+                  logger.error(
+                    { sourceGroup, requestId: data.requestId, err },
+                    'IPC calendar search failed',
+                  );
+                  const responsesDir = path.join(ipcBaseDir, sourceGroup, 'responses');
+                  fs.mkdirSync(responsesDir, { recursive: true });
+                  fs.writeFileSync(
+                    path.join(responsesDir, `${data.requestId}.json`),
+                    JSON.stringify({ requestId: data.requestId, results: [], totalCount: 0, error: err instanceof Error ? err.message : String(err) }),
+                  );
+                }
+              } else if (
+                data.type === 'create_calendar_event' &&
+                data.requestId
+              ) {
+                try {
+                  const result = await createCalendarEvent({
+                    subject: data.subject,
+                    start: data.start,
+                    end: data.end,
+                    attendees: data.attendees,
+                    body: data.body,
+                    location: data.location,
+                    isTeamsMeeting: data.isTeamsMeeting === true || data.isTeamsMeeting === 'true',
+                    isAllDay: data.isAllDay === true || data.isAllDay === 'true',
+                  });
+                  const responsesDir = path.join(ipcBaseDir, sourceGroup, 'responses');
+                  fs.mkdirSync(responsesDir, { recursive: true });
+                  const responseFile = path.join(responsesDir, `${data.requestId}.json`);
+                  const tempFile = `${responseFile}.tmp`;
+                  fs.writeFileSync(tempFile, JSON.stringify({ requestId: data.requestId, result }, null, 2));
+                  fs.renameSync(tempFile, responseFile);
+                  logger.info(
+                    { sourceGroup, requestId: data.requestId, eventId: result.id },
+                    'IPC calendar event created',
+                  );
+                } catch (err) {
+                  logger.error(
+                    { sourceGroup, requestId: data.requestId, err },
+                    'IPC calendar event creation failed',
+                  );
+                  const responsesDir = path.join(ipcBaseDir, sourceGroup, 'responses');
+                  fs.mkdirSync(responsesDir, { recursive: true });
+                  fs.writeFileSync(
+                    path.join(responsesDir, `${data.requestId}.json`),
+                    JSON.stringify({ requestId: data.requestId, error: err instanceof Error ? err.message : String(err) }),
+                  );
+                }
+              } else if (
+                data.type === 'update_calendar_event' &&
+                data.requestId
+              ) {
+                try {
+                  const result = await updateCalendarEvent({
+                    eventId: data.eventId,
+                    subject: data.subject,
+                    start: data.start,
+                    end: data.end,
+                    attendees: data.attendees,
+                    body: data.body,
+                    location: data.location,
+                    isTeamsMeeting: data.isTeamsMeeting === true || data.isTeamsMeeting === 'true' ? true : data.isTeamsMeeting === false || data.isTeamsMeeting === 'false' ? false : undefined,
+                  });
+                  const responsesDir = path.join(ipcBaseDir, sourceGroup, 'responses');
+                  fs.mkdirSync(responsesDir, { recursive: true });
+                  const responseFile = path.join(responsesDir, `${data.requestId}.json`);
+                  const tempFile = `${responseFile}.tmp`;
+                  fs.writeFileSync(tempFile, JSON.stringify({ requestId: data.requestId, result }, null, 2));
+                  fs.renameSync(tempFile, responseFile);
+                  logger.info(
+                    { sourceGroup, requestId: data.requestId, eventId: data.eventId },
+                    'IPC calendar event updated',
+                  );
+                } catch (err) {
+                  logger.error(
+                    { sourceGroup, requestId: data.requestId, err },
+                    'IPC calendar event update failed',
+                  );
+                  const responsesDir = path.join(ipcBaseDir, sourceGroup, 'responses');
+                  fs.mkdirSync(responsesDir, { recursive: true });
+                  fs.writeFileSync(
+                    path.join(responsesDir, `${data.requestId}.json`),
+                    JSON.stringify({ requestId: data.requestId, error: err instanceof Error ? err.message : String(err) }),
                   );
                 }
               } else if (data.type === 'message' && data.chatJid && data.text) {

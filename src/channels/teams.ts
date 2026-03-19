@@ -243,8 +243,7 @@ class TeamsChannel implements Channel {
   /** Fetch all delta pages for a chat to get the initial delta token (skip processing) */
   private async primeDelta(chatId: string): Promise<void> {
     try {
-      let url: string | null =
-        `/me/chats/${chatId}/messages/delta`;
+      let url: string | null = `/me/chats/${chatId}/messages/delta`;
       while (url) {
         const result: DeltaResponse = await graphGet(url);
 
@@ -260,8 +259,11 @@ class TeamsChannel implements Channel {
       logger.debug({ chatId }, 'Delta token primed');
     } catch (err: unknown) {
       const status = (err as { statusCode?: number }).statusCode;
+      const message = (err as { message?: string }).message || '';
       if (status === 403) {
         logger.debug({ chatId }, 'Skipping delta prime (not a member)');
+      } else if (status === 400 && message.includes('Change tracking is not supported')) {
+        logger.debug({ chatId }, 'Skipping delta prime (change tracking not supported)');
       } else {
         logger.warn({ chatId, err }, 'Failed to prime delta token');
       }
@@ -340,10 +342,14 @@ class TeamsChannel implements Channel {
     }
   }
 
-  /** Poll a single chat using its delta token */
+  /** Poll a single chat using its delta token, falling back to standard polling */
   private async pollChatDelta(chatId: string): Promise<void> {
     const deltaLink = this.deltaLinks[chatId];
-    if (!deltaLink) return; // Not yet primed
+    if (!deltaLink) {
+      // Delta not available for this chat — fall back to standard polling
+      await this.pollChatStandard(chatId);
+      return;
+    }
 
     const jid = toJid(chatId);
     let allMessages: TeamsMessage[] = [];
@@ -376,6 +382,11 @@ class TeamsChannel implements Channel {
       }
       if (status === 403) {
         logger.debug({ chatId }, 'Skipping Teams chat (not a member)');
+        return;
+      }
+      const message = (err as { message?: string }).message || '';
+      if (status === 400 && message.includes('Change tracking is not supported')) {
+        // Meeting chats don't support delta — silently skip
         return;
       }
       logger.warn({ chatId, err }, 'Failed to fetch Teams delta messages');
@@ -418,6 +429,84 @@ class TeamsChannel implements Channel {
       };
 
       this.opts.onMessage(jid, newMsg);
+    }
+  }
+  /** Fallback polling for chats where delta is unavailable */
+  private lastPollTime: Record<string, string> = {};
+
+  private async pollChatStandard(chatId: string): Promise<void> {
+    const jid = toJid(chatId);
+    const since = this.lastPollTime[chatId];
+
+    const url = `/me/chats/${chatId}/messages?$top=20&$orderby=createdDateTime desc`;
+
+    let messages: TeamsMessage[];
+    try {
+      const result = await graphGet<{ value: TeamsMessage[] }>(url);
+      messages = result.value || [];
+    } catch (err: unknown) {
+      const status = (err as { statusCode?: number }).statusCode;
+      if (status === 403) {
+        logger.debug({ chatId }, 'Skipping Teams chat (not a member)');
+      } else {
+        logger.warn({ chatId, err }, 'Failed to fetch Teams messages');
+      }
+      return;
+    }
+
+    // Filter to only new messages
+    if (since) {
+      messages = messages.filter((m) => m.createdDateTime > since);
+    }
+
+    // Process oldest first
+    messages.reverse();
+
+    for (const msg of messages) {
+      if (msg.messageType !== 'message') continue;
+
+      const isFromMe = msg.from?.user?.id === this.selfUserId;
+
+      const senderId =
+        msg.from?.user?.id || msg.from?.application?.id || 'unknown';
+      const senderName =
+        msg.from?.user?.displayName ||
+        msg.from?.application?.displayName ||
+        'Unknown';
+
+      if (msg.from?.user?.id) {
+        this.userNameCache.set(msg.from.user.id, senderName);
+      }
+
+      const content =
+        msg.body.contentType === 'html'
+          ? stripHtml(msg.body.content)
+          : msg.body.content;
+
+      if (!content) continue;
+
+      const newMsg: NewMessage = {
+        id: msg.id,
+        chat_jid: jid,
+        sender: senderId,
+        sender_name: senderName,
+        content,
+        timestamp: msg.createdDateTime,
+        is_from_me: isFromMe,
+        is_bot_message: false,
+      };
+
+      this.opts.onMessage(jid, newMsg);
+    }
+
+    // Update poll cursor
+    if (messages.length > 0) {
+      const latest = messages[messages.length - 1].createdDateTime;
+      if (!since || latest > since) {
+        this.lastPollTime[chatId] = latest;
+      }
+    } else if (!since) {
+      this.lastPollTime[chatId] = new Date().toISOString();
     }
   }
 }

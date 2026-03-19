@@ -492,6 +492,213 @@ Examples:
   },
 );
 
+// --- Calendar tools ---
+
+server.tool(
+  'search_calendar',
+  `Search your Outlook/M365 calendar for events in a date range. Returns event details including attendees, location, and Teams meeting links.
+
+Examples:
+- search_calendar(after: "2026-03-19", before: "2026-03-26") — this week's events
+- search_calendar(after: "2026-03-19", before: "2026-03-20", query: "standup") — today's standups
+- search_calendar(after: "2026-03-01", before: "2026-03-31", attendee: "boss@company.com") — meetings with someone`,
+  {
+    after: z.string().describe('Start of date range (ISO datetime, e.g. "2026-03-19" or "2026-03-19T09:00:00")'),
+    before: z.string().describe('End of date range (ISO datetime)'),
+    query: z.string().optional().describe('Filter by subject text'),
+    attendee: z.string().optional().describe('Filter by attendee email address'),
+    top: z.number().optional().describe('Max results (default 20, max 50)'),
+  },
+  async (args) => {
+    const requestId = `cal-search-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    writeIpcFile(MESSAGES_DIR, {
+      type: 'search_calendar',
+      requestId,
+      after: args.after,
+      before: args.before,
+      query: args.query,
+      attendee: args.attendee,
+      top: args.top,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+
+    const responseFile = path.join(RESPONSES_DIR, `${requestId}.json`);
+    const timeout = 30000;
+    const start = Date.now();
+
+    while (Date.now() - start < timeout) {
+      if (fs.existsSync(responseFile)) {
+        try {
+          const response = JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
+          try { fs.unlinkSync(responseFile); } catch {}
+
+          if (response.error) {
+            return { content: [{ type: 'text' as const, text: `Calendar search error: ${response.error}` }], isError: true };
+          }
+
+          if (response.results.length === 0) {
+            return { content: [{ type: 'text' as const, text: 'No calendar events found in that range.' }] };
+          }
+
+          const formatted = response.results
+            .map((e: { subject: string; start: string; end: string; location: string; attendees: Array<{ name: string; email: string; response: string }>; organizer: string; isOnlineMeeting: boolean; joinUrl: string | null; isAllDay: boolean; id: string }) => {
+              const lines = [`**${e.subject}**`];
+              lines.push(`  ID: ${e.id}`);
+              if (e.isAllDay) {
+                lines.push(`  All day: ${e.start.split('T')[0]}`);
+              } else {
+                lines.push(`  Time: ${e.start} → ${e.end}`);
+              }
+              if (e.location) lines.push(`  Location: ${e.location}`);
+              if (e.isOnlineMeeting && e.joinUrl) lines.push(`  Teams: ${e.joinUrl}`);
+              lines.push(`  Organizer: ${e.organizer}`);
+              if (e.attendees.length > 0) {
+                lines.push(`  Attendees: ${e.attendees.map((a: { name: string; email: string; response: string }) => `${a.name} <${a.email}> (${a.response})`).join(', ')}`);
+              }
+              return lines.join('\n');
+            })
+            .join('\n\n');
+
+          return { content: [{ type: 'text' as const, text: `Found ${response.totalCount} event(s):\n\n${formatted}` }] };
+        } catch { /* partial write, retry */ }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    return { content: [{ type: 'text' as const, text: 'Calendar search timed out.' }], isError: true };
+  },
+);
+
+server.tool(
+  'create_calendar_event',
+  `Create a new calendar event. Can optionally include attendees (who will receive invites) and a Teams meeting link.
+
+Times are in your LOCAL timezone — do NOT add Z suffix or timezone offset.
+
+Examples:
+- Simple event: create_calendar_event(subject: "Lunch", start: "2026-03-20T12:00:00", end: "2026-03-20T13:00:00")
+- Teams meeting: create_calendar_event(subject: "Team Sync", start: "2026-03-20T14:00:00", end: "2026-03-20T14:30:00", attendees: ["alice@co.com", "bob@co.com"], is_teams_meeting: true)
+- All-day: create_calendar_event(subject: "PTO", start: "2026-03-21", end: "2026-03-22", is_all_day: true)`,
+  {
+    subject: z.string().describe('Event title'),
+    start: z.string().describe('Start time (local, e.g. "2026-03-20T14:00:00" or "2026-03-20" for all-day)'),
+    end: z.string().describe('End time (local)'),
+    attendees: z.array(z.string()).optional().describe('Email addresses of invitees'),
+    body: z.string().optional().describe('Event description/notes'),
+    location: z.string().optional().describe('Location (room name, address, etc.)'),
+    is_teams_meeting: z.boolean().optional().describe('Create a Teams online meeting link (default false)'),
+    is_all_day: z.boolean().optional().describe('All-day event (default false)'),
+  },
+  async (args) => {
+    const requestId = `cal-create-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    writeIpcFile(MESSAGES_DIR, {
+      type: 'create_calendar_event',
+      requestId,
+      subject: args.subject,
+      start: args.start,
+      end: args.end,
+      attendees: args.attendees,
+      body: args.body,
+      location: args.location,
+      isTeamsMeeting: args.is_teams_meeting || false,
+      isAllDay: args.is_all_day || false,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+
+    const responseFile = path.join(RESPONSES_DIR, `${requestId}.json`);
+    const timeout = 30000;
+    const start = Date.now();
+
+    while (Date.now() - start < timeout) {
+      if (fs.existsSync(responseFile)) {
+        try {
+          const response = JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
+          try { fs.unlinkSync(responseFile); } catch {}
+
+          if (response.error) {
+            return { content: [{ type: 'text' as const, text: `Failed to create event: ${response.error}` }], isError: true };
+          }
+
+          const r = response.result;
+          let text = `Event created: "${r.subject}" (${r.start} → ${r.end})`;
+          if (r.joinUrl) text += `\nTeams link: ${r.joinUrl}`;
+          text += `\nEvent ID: ${r.id}`;
+          return { content: [{ type: 'text' as const, text }] };
+        } catch { /* partial write, retry */ }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    return { content: [{ type: 'text' as const, text: 'Event creation timed out.' }], isError: true };
+  },
+);
+
+server.tool(
+  'update_calendar_event',
+  `Update an existing calendar event. Use the event ID from search_calendar results. Only provided fields are changed.
+
+To add attendees to an existing meeting, you must include ALL current attendees plus the new ones — this is a full replacement, not an append.
+
+Examples:
+- Reschedule: update_calendar_event(event_id: "AAMk...", start: "2026-03-20T15:00:00", end: "2026-03-20T15:30:00")
+- Add attendee: update_calendar_event(event_id: "AAMk...", attendees: ["existing@co.com", "new@co.com"])
+- Add Teams link: update_calendar_event(event_id: "AAMk...", is_teams_meeting: true)`,
+  {
+    event_id: z.string().describe('Graph event ID (from search_calendar results)'),
+    subject: z.string().optional().describe('New event title'),
+    start: z.string().optional().describe('New start time (local)'),
+    end: z.string().optional().describe('New end time (local)'),
+    attendees: z.array(z.string()).optional().describe('Full list of attendee emails (replaces existing — include current + new)'),
+    body: z.string().optional().describe('New event description'),
+    location: z.string().optional().describe('New location'),
+    is_teams_meeting: z.boolean().optional().describe('Enable/disable Teams meeting link'),
+  },
+  async (args) => {
+    const requestId = `cal-update-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    writeIpcFile(MESSAGES_DIR, {
+      type: 'update_calendar_event',
+      requestId,
+      eventId: args.event_id,
+      subject: args.subject,
+      start: args.start,
+      end: args.end,
+      attendees: args.attendees,
+      body: args.body,
+      location: args.location,
+      isTeamsMeeting: args.is_teams_meeting,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+
+    const responseFile = path.join(RESPONSES_DIR, `${requestId}.json`);
+    const timeout = 30000;
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < timeout) {
+      if (fs.existsSync(responseFile)) {
+        try {
+          const response = JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
+          try { fs.unlinkSync(responseFile); } catch {}
+
+          if (response.error) {
+            return { content: [{ type: 'text' as const, text: `Failed to update event: ${response.error}` }], isError: true };
+          }
+
+          const r = response.result;
+          let text = `Event updated: "${r.subject}" (${r.start} → ${r.end})`;
+          if (r.joinUrl) text += `\nTeams link: ${r.joinUrl}`;
+          return { content: [{ type: 'text' as const, text }] };
+        } catch { /* partial write, retry */ }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    return { content: [{ type: 'text' as const, text: 'Event update timed out.' }], isError: true };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

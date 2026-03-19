@@ -25,6 +25,7 @@ interface OutlookMessage {
   isRead: boolean;
   parentFolderId: string;
   inferenceClassification?: 'focused' | 'other';
+  internetMessageHeaders?: Array<{ name: string; value: string }>;
 }
 
 interface MailFolder {
@@ -198,6 +199,7 @@ function classifyByAlias(
   msg: OutlookMessage,
   aliases: AliasMapping[],
 ): AliasMapping | null {
+  // Check the resolved toRecipients/ccRecipients first
   const allRecipients = [
     ...msg.toRecipients.map((r) => r.emailAddress.address.toLowerCase()),
     ...msg.ccRecipients.map((r) => r.emailAddress.address.toLowerCase()),
@@ -208,6 +210,23 @@ function classifyByAlias(
       return mapping;
     }
   }
+
+  // Exchange rewrites alias addresses to the primary SMTP address in toRecipients.
+  // Check the raw internet message headers (To/CC) which preserve the original alias.
+  if (msg.internetMessageHeaders) {
+    const rawTo =
+      msg.internetMessageHeaders
+        .filter((h) => h.name.toLowerCase() === 'to' || h.name.toLowerCase() === 'cc')
+        .map((h) => h.value.toLowerCase())
+        .join(' ') || '';
+
+    for (const mapping of aliases) {
+      if (rawTo.includes(mapping.alias)) {
+        return mapping;
+      }
+    }
+  }
+
   return null;
 }
 
@@ -647,16 +666,34 @@ export async function startOutlookLoop(opts: OutlookLoopOpts): Promise<void> {
   async function pollInbox(): Promise<void> {
     try {
       const result = await graphGet<{ value: OutlookMessage[] }>(
-        '/me/mailFolders/inbox/messages?$filter=isRead eq false&$top=50&$orderby=receivedDateTime asc&$select=id,conversationId,internetMessageId,subject,bodyPreview,body,from,toRecipients,ccRecipients,receivedDateTime,isRead,parentFolderId,inferenceClassification',
+        '/me/mailFolders/inbox/messages?$filter=isRead eq false&$top=50&$orderby=receivedDateTime desc&$select=id,conversationId,internetMessageId,subject,bodyPreview,body,from,toRecipients,ccRecipients,receivedDateTime,isRead,parentFolderId,inferenceClassification,internetMessageHeaders',
       );
 
       const messages = result.value || [];
+
+      if (messages.length > 0) {
+        logger.info(
+          { unreadCount: messages.length, newCount: messages.filter((m) => !processedIds.has(m.id)).length },
+          'Outlook poll: found unread emails',
+        );
+      }
 
       for (const msg of messages) {
         if (processedIds.has(msg.id)) continue;
 
         // Classify by alias
         const aliasMatch = classifyByAlias(msg, aliases);
+
+        logger.info(
+          {
+            subject: msg.subject,
+            from: msg.from.emailAddress.address,
+            to: msg.toRecipients.map((r) => r.emailAddress.address),
+            aliasMatched: aliasMatch?.alias || null,
+            mode,
+          },
+          'Outlook: processing email',
+        );
 
         if (!aliasMatch && mode === 'alias') {
           // Not addressed to any configured alias, skip
