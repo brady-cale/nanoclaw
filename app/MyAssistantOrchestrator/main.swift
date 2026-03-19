@@ -60,9 +60,14 @@ class OrchestratorApp: NSObject, NSApplicationDelegate {
         contentView.addSubview(restartBtn)
 
         let logsBtn = NSButton(title: "View Logs", target: self, action: #selector(viewLogs))
-        logsBtn.frame = NSRect(x: 20, y: 40, width: 280, height: 32)
+        logsBtn.frame = NSRect(x: 20, y: 40, width: 130, height: 32)
         logsBtn.bezelStyle = .rounded
         contentView.addSubview(logsBtn)
+
+        let clearLogsBtn = NSButton(title: "Clear Logs", target: self, action: #selector(clearLogs))
+        clearLogsBtn.frame = NSRect(x: 170, y: 40, width: 130, height: 32)
+        clearLogsBtn.bezelStyle = .rounded
+        contentView.addSubview(clearLogsBtn)
 
         window.contentView = contentView
         window.makeKeyAndOrderFront(nil)
@@ -135,6 +140,13 @@ class OrchestratorApp: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             self?.updateStatus()
         }
+    }
+
+    @objc private func clearLogs() {
+        let logPath = "\(projectRoot)/logs/nanoclaw.log"
+        let errorLogPath = "\(projectRoot)/logs/nanoclaw.error.log"
+        try? "".write(toFile: logPath, atomically: true, encoding: .utf8)
+        try? "".write(toFile: errorLogPath, atomically: true, encoding: .utf8)
     }
 
     @objc private func viewLogs() {

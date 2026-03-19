@@ -8,6 +8,7 @@ import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
+import { draftOutlookEmail, searchOutlookEmails } from './outlook.js';
 import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
@@ -74,7 +75,106 @@ export function startIpcWatcher(deps: IpcDeps): void {
             const filePath = path.join(messagesDir, file);
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-              if (data.type === 'message' && data.chatJid && data.text) {
+              if (
+                data.type === 'draft_outlook_email' &&
+                data.fromAlias &&
+                data.to &&
+                data.subject &&
+                data.body
+              ) {
+                try {
+                  const draftId = await draftOutlookEmail({
+                    fromAlias: data.fromAlias,
+                    to: data.to,
+                    cc: data.cc,
+                    subject: data.subject,
+                    body: data.body,
+                    inReplyTo: data.inReplyTo,
+                    conversationId: data.conversationId,
+                  });
+                  logger.info(
+                    { from: data.fromAlias, to: data.to, sourceGroup, draftId },
+                    'IPC outlook email draft saved',
+                  );
+                } catch (err) {
+                  logger.error(
+                    { from: data.fromAlias, to: data.to, sourceGroup, err },
+                    'IPC outlook email draft failed',
+                  );
+                }
+              } else if (
+                data.type === 'search_emails' &&
+                data.requestId
+              ) {
+                // Search emails via Graph API and write response file
+                try {
+                  const results = await searchOutlookEmails({
+                    query: data.query,
+                    from: data.from,
+                    subject: data.subject,
+                    after: data.after,
+                    before: data.before,
+                    top: data.top ? parseInt(data.top, 10) : undefined,
+                  });
+                  const responsesDir = path.join(
+                    ipcBaseDir,
+                    sourceGroup,
+                    'responses',
+                  );
+                  fs.mkdirSync(responsesDir, { recursive: true });
+                  const responseFile = path.join(
+                    responsesDir,
+                    `${data.requestId}.json`,
+                  );
+                  const tempFile = `${responseFile}.tmp`;
+                  fs.writeFileSync(
+                    tempFile,
+                    JSON.stringify(
+                      {
+                        requestId: data.requestId,
+                        results,
+                        totalCount: results.length,
+                      },
+                      null,
+                      2,
+                    ),
+                  );
+                  fs.renameSync(tempFile, responseFile);
+                  logger.info(
+                    {
+                      sourceGroup,
+                      requestId: data.requestId,
+                      resultCount: results.length,
+                    },
+                    'IPC email search completed',
+                  );
+                } catch (err) {
+                  logger.error(
+                    { sourceGroup, requestId: data.requestId, err },
+                    'IPC email search failed',
+                  );
+                  // Write error response so agent doesn't hang
+                  const responsesDir = path.join(
+                    ipcBaseDir,
+                    sourceGroup,
+                    'responses',
+                  );
+                  fs.mkdirSync(responsesDir, { recursive: true });
+                  const responseFile = path.join(
+                    responsesDir,
+                    `${data.requestId}.json`,
+                  );
+                  fs.writeFileSync(
+                    responseFile,
+                    JSON.stringify({
+                      requestId: data.requestId,
+                      results: [],
+                      totalCount: 0,
+                      error: err instanceof Error ? err.message : String(err),
+                    }),
+                  );
+                }
+              } else if (data.type === 'message' && data.chatJid && data.text) {
                 // Authorization: verify this group can send to this chatJid
                 const targetGroup = registeredGroups[data.chatJid];
                 if (

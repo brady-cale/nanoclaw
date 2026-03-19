@@ -200,8 +200,13 @@ class TeamsChannel implements Channel {
     try {
       const result = await graphGet<{ value: TeamsMessage[] }>(url);
       messages = result.value || [];
-    } catch (err) {
-      logger.warn({ chatId: chat.id, err }, 'Failed to fetch Teams messages');
+    } catch (err: unknown) {
+      const status = (err as { statusCode?: number }).statusCode;
+      if (status === 403) {
+        logger.debug({ chatId: chat.id }, 'Skipping Teams chat (not a member)');
+      } else {
+        logger.warn({ chatId: chat.id, err }, 'Failed to fetch Teams messages');
+      }
       return;
     }
 

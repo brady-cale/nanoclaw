@@ -333,6 +333,122 @@ Use available_groups.json to find the JID for a group. The folder name must be c
   },
 );
 
+server.tool(
+  'draft_outlook_email',
+  `Save a draft email reply in Outlook. The user will review and send it themselves. NEVER send emails directly — always use this to create drafts.`,
+  {
+    from_alias: z.string().describe('Your alias email address (the one the email was sent to)'),
+    to: z.array(z.string()).describe('Recipient email addresses'),
+    cc: z.array(z.string()).optional().describe('CC email addresses'),
+    subject: z.string().describe('Email subject (use "Re: ..." for replies)'),
+    body: z.string().describe('Email body text (plain text)'),
+    in_reply_to: z.string().optional().describe('Message-ID of the email being replied to (for threading)'),
+    conversation_id: z.string().optional().describe('Conversation ID for email thread grouping'),
+  },
+  async (args) => {
+    const data = {
+      type: 'draft_outlook_email',
+      fromAlias: args.from_alias,
+      to: args.to,
+      cc: args.cc,
+      subject: args.subject,
+      body: args.body,
+      inReplyTo: args.in_reply_to,
+      conversationId: args.conversation_id,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: `Draft saved for ${args.to.join(', ')} with subject "${args.subject}". The user will review and send it.` }] };
+  },
+);
+
+const RESPONSES_DIR = path.join(IPC_DIR, 'responses');
+
+server.tool(
+  'search_emails',
+  `Search Outlook emails via Microsoft Graph API. Use this to find emails by keyword, sender, subject, or date range. Returns up to 50 results.
+
+Examples:
+- search_emails(query: "quarterly report") — full-text search
+- search_emails(from: "boss@company.com", after: "2026-03-01") — emails from a person since a date
+- search_emails(subject: "invoice", top: 10) — subject search, limited results`,
+  {
+    query: z.string().optional().describe('Free-text search across email content'),
+    from: z.string().optional().describe('Filter by sender email address'),
+    subject: z.string().optional().describe('Filter by subject line'),
+    after: z.string().optional().describe('Only emails after this ISO date (e.g. "2026-03-01")'),
+    before: z.string().optional().describe('Only emails before this ISO date'),
+    top: z.number().optional().describe('Max results (default 20, max 50)'),
+  },
+  async (args) => {
+    const requestId = `search-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const data: Record<string, string | number | undefined> = {
+      type: 'search_emails',
+      requestId,
+      query: args.query,
+      from: args.from,
+      subject: args.subject,
+      after: args.after,
+      before: args.before,
+      top: args.top,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    // Poll for response file (host writes it after processing)
+    const responseFile = path.join(RESPONSES_DIR, `${requestId}.json`);
+    const timeout = 30000;
+    const interval = 500;
+    const start = Date.now();
+
+    while (Date.now() - start < timeout) {
+      if (fs.existsSync(responseFile)) {
+        try {
+          const response = JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
+          // Clean up response file
+          try { fs.unlinkSync(responseFile); } catch {}
+
+          if (response.error) {
+            return {
+              content: [{ type: 'text' as const, text: `Email search error: ${response.error}` }],
+              isError: true,
+            };
+          }
+
+          if (response.results.length === 0) {
+            return {
+              content: [{ type: 'text' as const, text: 'No emails found matching your search.' }],
+            };
+          }
+
+          const formatted = response.results
+            .map((r: { from: string; fromName: string; subject: string; receivedDateTime: string; bodyPreview: string }) =>
+              `From: ${r.fromName} <${r.from}>\nSubject: ${r.subject}\nDate: ${r.receivedDateTime}\nPreview: ${r.bodyPreview.slice(0, 200)}\n`)
+            .join('\n---\n');
+
+          return {
+            content: [{ type: 'text' as const, text: `Found ${response.totalCount} email(s):\n\n${formatted}` }],
+          };
+        } catch {
+          // File might be partially written, retry
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, interval));
+    }
+
+    return {
+      content: [{ type: 'text' as const, text: 'Email search timed out. The host may be busy — try again.' }],
+      isError: true,
+    };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);
