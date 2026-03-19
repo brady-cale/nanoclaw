@@ -43,12 +43,9 @@ When you learn something important:
 - Split files larger than 500 lines into folders
 - Keep an index in your memory for the files you create
 
-## Email Access (requires Outlook integration)
+## Available Tools
 
-If the user has set up Outlook via `/add-outlook`, the following tools are available. If they don't exist, tell the user they need to set up Outlook first.
-
-- **`search_emails`** — Search emails by `query` (free-text), `from`, `subject`, `after`/`before` (ISO dates), `top` (max 50)
-- **`draft_outlook_email`** — Save a draft reply in Outlook (never send directly)
+See `/workspace/global/CLAUDE.md` → "Installed Tools" for all MCP tools available to you (email search, drafts, etc.). Always try calling them directly.
 
 Recent emails are also stored in the messages database (`chat_jid` values starting with `outlook:`).
 

@@ -122,28 +122,51 @@ If mode is "all", also configure:
 M365_OUTLOOK_DEFAULT_GROUP=email-default
 ```
 
-### 7. Create Group CLAUDE.md Files
+### 7. Register Tools in Global CLAUDE.md
 
-For each alias group, create `groups/{folder}/CLAUDE.md` with instructions for that agent. Example:
+Add the Outlook tools to the `## Installed Tools` section of `groups/global/CLAUDE.md`. If the section doesn't exist, create it. This is the single source of truth for all MCP tools — agents in every group read it.
+
+```markdown
+### Outlook (email)
+
+- **`mcp__nanoclaw__search_emails`** — Search Outlook emails in real-time via Microsoft Graph API. Supports `query` (free-text), `from`, `subject`, `after`/`before` (ISO dates), and `top` (max results, default 20, max 50).
+- **`mcp__nanoclaw__draft_outlook_email`** — Save a draft email reply in Outlook. NEVER send emails directly — always draft. Requires `from_alias`, `to`, `subject`, `body`, and optionally `in_reply_to` and `conversation_id` for threading.
+```
+
+Do NOT duplicate tool docs in per-group CLAUDE.md files. Instead, add a one-liner pointing to global:
+
+```markdown
+## Available Tools
+
+See `/workspace/global/CLAUDE.md` → "Installed Tools" for all MCP tools available to you.
+```
+
+### 8. Create Group CLAUDE.md Files
+
+For each alias group, create `groups/{folder}/CLAUDE.md` with group-specific instructions (identity, rules, formatting). Example:
 
 ```markdown
 # Outlook Agent — {alias}
 
 You handle emails sent to {alias}. You are an email agent with access to the email thread context.
 
+## Available Tools
+
+See `/workspace/global/CLAUDE.md` → "Installed Tools" for all MCP tools. Use `mcp__nanoclaw__search_emails` to look up prior emails and `mcp__nanoclaw__draft_outlook_email` to draft replies.
+
 ## Rules
 
 - Always reply professionally
-- Use the `send_outlook_email` IPC command to reply
+- Use the `mcp__nanoclaw__draft_outlook_email` tool to draft replies — NEVER send directly
 - Include the `from_alias`, `to`, `subject`, `in_reply_to`, and `conversation_id` fields
-- Keep the user's alias ({alias}) as the sender for all outbound emails
+- Keep {alias} as the sender for all draft emails
 
 ## Your Identity
 
 You are replying as {alias}. Maintain consistent tone and formatting.
 ```
 
-### 8. Build and Start the Orchestrator
+### 9. Build and Start the Orchestrator
 
 Build the project and the MyAssistantOrchestrator app (if not already installed from Teams setup). This is the shared service that runs Teams, Outlook, and any future integrations.
 
