@@ -101,6 +101,16 @@ function buildVolumeMounts(
       readonly: false,
     });
 
+    // Mount CLAUDE.md as read-only overlay to prevent agent from modifying its own instructions
+    const claudeMdPath = path.join(groupDir, 'CLAUDE.md');
+    if (fs.existsSync(claudeMdPath)) {
+      mounts.push({
+        hostPath: claudeMdPath,
+        containerPath: '/workspace/group/CLAUDE.md',
+        readonly: true,
+      });
+    }
+
     // Global memory directory (read-only for non-main)
     // Only directory mounts are supported, not file mounts
     const globalDir = path.join(GROUPS_DIR, 'global');

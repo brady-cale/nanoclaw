@@ -164,6 +164,13 @@ export function initDatabase(): void {
   db = new Database(dbPath);
   createSchema(db);
 
+  // Restrict database to owner-only read/write
+  try {
+    fs.chmodSync(dbPath, 0o600);
+  } catch {
+    // Non-fatal — may fail on some filesystems
+  }
+
   // Migrate from JSON files if they exist
   migrateJsonState();
 }

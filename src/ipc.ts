@@ -43,6 +43,28 @@ export function startIpcWatcher(deps: IpcDeps): void {
   const ipcBaseDir = path.join(DATA_DIR, 'ipc');
   fs.mkdirSync(ipcBaseDir, { recursive: true });
 
+  // Rate limiting: track operations per group per minute
+  const rateLimits = new Map<string, { count: number; resetAt: number }>();
+  const MAX_OPS_PER_MINUTE = 30;
+
+  function checkRateLimit(sourceGroup: string): boolean {
+    const now = Date.now();
+    let entry = rateLimits.get(sourceGroup);
+    if (!entry || now > entry.resetAt) {
+      entry = { count: 0, resetAt: now + 60_000 };
+      rateLimits.set(sourceGroup, entry);
+    }
+    entry.count++;
+    if (entry.count > MAX_OPS_PER_MINUTE) {
+      logger.warn(
+        { sourceGroup, count: entry.count },
+        'IPC rate limit exceeded — dropping message',
+      );
+      return false;
+    }
+    return true;
+  }
+
   const processIpcFiles = async () => {
     // Scan all group IPC directories (identity determined by directory)
     let groupFolders: string[];
@@ -79,6 +101,13 @@ export function startIpcWatcher(deps: IpcDeps): void {
           for (const file of messageFiles) {
             const filePath = path.join(messagesDir, file);
             try {
+              if (!checkRateLimit(sourceGroup)) {
+                // Rate limited — move to errors
+                const errorDir = path.join(ipcBaseDir, 'errors');
+                fs.mkdirSync(errorDir, { recursive: true });
+                fs.renameSync(filePath, path.join(errorDir, `ratelimit-${sourceGroup}-${file}`));
+                continue;
+              }
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               if (
                 data.type === 'draft_outlook_email' &&
@@ -189,6 +218,15 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     );
                   }
               } else if (data.type === 'search_emails' && data.requestId) {
+                if (!isMain) {
+                  logger.warn({ sourceGroup }, 'Unauthorized search_emails attempt blocked (main only)');
+                  const responsesDir = path.join(ipcBaseDir, sourceGroup, 'responses');
+                  fs.mkdirSync(responsesDir, { recursive: true });
+                  fs.writeFileSync(
+                    path.join(responsesDir, `${data.requestId}.json`),
+                    JSON.stringify({ requestId: data.requestId, results: [], totalCount: 0, error: 'Only the main group can search emails' }),
+                  );
+                } else
                 // Search emails via Graph API and write response file
                 try {
                   const results = await searchOutlookEmails({
@@ -258,6 +296,15 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   );
                 }
               } else if (data.type === 'search_calendar' && data.requestId) {
+                if (!isMain) {
+                  logger.warn({ sourceGroup }, 'Unauthorized search_calendar attempt blocked (main only)');
+                  const responsesDir = path.join(ipcBaseDir, sourceGroup, 'responses');
+                  fs.mkdirSync(responsesDir, { recursive: true });
+                  fs.writeFileSync(
+                    path.join(responsesDir, `${data.requestId}.json`),
+                    JSON.stringify({ requestId: data.requestId, results: [], totalCount: 0, error: 'Only the main group can search calendar' }),
+                  );
+                } else
                 try {
                   const results = await searchCalendarEvents({
                     after: data.after,
@@ -541,6 +588,12 @@ export function startIpcWatcher(deps: IpcDeps): void {
           for (const file of taskFiles) {
             const filePath = path.join(tasksDir, file);
             try {
+              if (!checkRateLimit(sourceGroup)) {
+                const errorDir = path.join(ipcBaseDir, 'errors');
+                fs.mkdirSync(errorDir, { recursive: true });
+                fs.renameSync(filePath, path.join(errorDir, `ratelimit-${sourceGroup}-${file}`));
+                continue;
+              }
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               // Pass source group identity to processTaskIpc for authorization
               await processTaskIpc(data, sourceGroup, isMain, deps);
