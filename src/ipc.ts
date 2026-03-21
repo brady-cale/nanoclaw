@@ -944,25 +944,38 @@ export async function processTaskIpc(
 
     case 'create_project': {
       if (!data.name || !data.workflow || !Array.isArray(data.workflow)) {
-        logger.warn({ sourceGroup }, 'Invalid create_project: missing name or workflow');
+        logger.warn(
+          { sourceGroup },
+          'Invalid create_project: missing name or workflow',
+        );
         break;
       }
       const projectTargetJid = data.targetJid || data.chatJid;
       if (!projectTargetJid) {
-        logger.warn({ sourceGroup }, 'create_project: missing targetJid/chatJid');
+        logger.warn(
+          { sourceGroup },
+          'create_project: missing targetJid/chatJid',
+        );
         break;
       }
       const targetGroup = registeredGroups[projectTargetJid];
       if (!targetGroup) {
-        logger.warn({ projectTargetJid }, 'create_project: target group not registered');
+        logger.warn(
+          { projectTargetJid },
+          'create_project: target group not registered',
+        );
         break;
       }
       if (!isMain && targetGroup.folder !== sourceGroup) {
-        logger.warn({ sourceGroup }, 'Unauthorized create_project attempt blocked');
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized create_project attempt blocked',
+        );
         break;
       }
       const projectId =
-        data.projectId || `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        data.projectId ||
+        `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const now = new Date().toISOString();
       const project: Project = {
         id: projectId,
@@ -979,15 +992,27 @@ export async function processTaskIpc(
         updated_at: now,
       };
       createProject(project);
-      logger.info({ projectId, sourceGroup, name: data.name }, 'Project created via IPC');
+      logger.info(
+        { projectId, sourceGroup, name: data.name },
+        'Project created via IPC',
+      );
 
       // Write response if requestId provided
       if (data.requestId) {
-        const responsesDir = path.join(DATA_DIR, 'ipc', sourceGroup, 'responses');
+        const responsesDir = path.join(
+          DATA_DIR,
+          'ipc',
+          sourceGroup,
+          'responses',
+        );
         fs.mkdirSync(responsesDir, { recursive: true });
         fs.writeFileSync(
           path.join(responsesDir, `${data.requestId}.json`),
-          JSON.stringify({ requestId: data.requestId, projectId, status: 'pending_approval' }),
+          JSON.stringify({
+            requestId: data.requestId,
+            projectId,
+            status: 'pending_approval',
+          }),
         );
       }
       deps.onProjectsChanged();
@@ -998,7 +1023,10 @@ export async function processTaskIpc(
       if (!data.projectId) break;
       const proj = getProjectById(data.projectId);
       if (!proj) {
-        logger.warn({ projectId: data.projectId }, 'approve_project: not found');
+        logger.warn(
+          { projectId: data.projectId },
+          'approve_project: not found',
+        );
         break;
       }
       if (!isMain && proj.group_folder !== sourceGroup) {
@@ -1006,7 +1034,10 @@ export async function processTaskIpc(
         break;
       }
       if (proj.status !== 'pending_approval') {
-        logger.warn({ projectId: data.projectId, status: proj.status }, 'Project not pending approval');
+        logger.warn(
+          { projectId: data.projectId, status: proj.status },
+          'Project not pending approval',
+        );
         break;
       }
 
@@ -1032,7 +1063,10 @@ export async function processTaskIpc(
       });
 
       updateProject(data.projectId, { checker_task_id: checkerTaskId });
-      logger.info({ projectId: data.projectId, checkerTaskId }, 'Project approved and checker task created');
+      logger.info(
+        { projectId: data.projectId, checkerTaskId },
+        'Project approved and checker task created',
+      );
       deps.onTasksChanged();
       deps.onProjectsChanged();
       break;
@@ -1052,11 +1086,15 @@ export async function processTaskIpc(
 
       const projUpdates: Parameters<typeof updateProject>[1] = {};
       if (data.workflow !== undefined) projUpdates.workflow = data.workflow;
-      if (data.current_step !== undefined) projUpdates.current_step = data.current_step;
-      if (data.status !== undefined) projUpdates.status = data.status as Project['status'];
+      if (data.current_step !== undefined)
+        projUpdates.current_step = data.current_step;
+      if (data.status !== undefined)
+        projUpdates.status = data.status as Project['status'];
       if (data.name !== undefined) projUpdates.name = data.name;
-      if (data.description !== undefined) projUpdates.description = data.description;
-      if (data.check_interval_ms !== undefined) projUpdates.check_interval_ms = data.check_interval_ms;
+      if (data.description !== undefined)
+        projUpdates.description = data.description;
+      if (data.check_interval_ms !== undefined)
+        projUpdates.check_interval_ms = data.check_interval_ms;
 
       updateProject(data.projectId, projUpdates);
 
@@ -1066,17 +1104,28 @@ export async function processTaskIpc(
           const task = getTaskById(proj.checker_task_id);
           if (task) {
             deleteTask(proj.checker_task_id);
-            logger.info({ checkerTaskId: proj.checker_task_id }, 'Checker task cleaned up');
+            logger.info(
+              { checkerTaskId: proj.checker_task_id },
+              'Checker task cleaned up',
+            );
             deps.onTasksChanged();
           }
         }
       }
 
-      logger.info({ projectId: data.projectId, sourceGroup }, 'Project updated via IPC');
+      logger.info(
+        { projectId: data.projectId, sourceGroup },
+        'Project updated via IPC',
+      );
       deps.onProjectsChanged();
 
       if (data.requestId) {
-        const responsesDir = path.join(DATA_DIR, 'ipc', sourceGroup, 'responses');
+        const responsesDir = path.join(
+          DATA_DIR,
+          'ipc',
+          sourceGroup,
+          'responses',
+        );
         fs.mkdirSync(responsesDir, { recursive: true });
         fs.writeFileSync(
           path.join(responsesDir, `${data.requestId}.json`),
@@ -1091,7 +1140,9 @@ export async function processTaskIpc(
       const responsesDir = path.join(DATA_DIR, 'ipc', sourceGroup, 'responses');
       fs.mkdirSync(responsesDir, { recursive: true });
 
-      const projects = isMain ? getAllProjects() : getProjectsForGroup(sourceGroup);
+      const projects = isMain
+        ? getAllProjects()
+        : getProjectsForGroup(sourceGroup);
       const responseFile = path.join(responsesDir, `${data.requestId}.json`);
       const tempFile = `${responseFile}.tmp`;
       fs.writeFileSync(
@@ -1118,7 +1169,10 @@ export async function processTaskIpc(
           deps.onTasksChanged();
         }
       }
-      logger.info({ projectId: data.projectId, sourceGroup }, 'Project cancelled via IPC');
+      logger.info(
+        { projectId: data.projectId, sourceGroup },
+        'Project cancelled via IPC',
+      );
       deps.onProjectsChanged();
       break;
     }

@@ -584,7 +584,9 @@ export function getProjectsForGroup(groupFolder: string): Project[] {
     .prepare(
       'SELECT * FROM projects WHERE group_folder = ? ORDER BY created_at DESC',
     )
-    .all(groupFolder) as Array<Omit<Project, 'workflow'> & { workflow: string }>;
+    .all(groupFolder) as Array<
+    Omit<Project, 'workflow'> & { workflow: string }
+  >;
   return rows.map((r) => ({
     ...r,
     workflow: JSON.parse(r.workflow) as WorkflowStep[],
@@ -666,9 +668,9 @@ export function updateProject(
   values.push(new Date().toISOString());
   values.push(id);
 
-  db.prepare(
-    `UPDATE projects SET ${fields.join(', ')} WHERE id = ?`,
-  ).run(...values);
+  db.prepare(`UPDATE projects SET ${fields.join(', ')} WHERE id = ?`).run(
+    ...values,
+  );
 }
 
 export function deleteProject(id: string): void {
