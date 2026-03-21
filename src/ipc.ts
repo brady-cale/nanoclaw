@@ -5,7 +5,19 @@ import { CronExpressionParser } from 'cron-parser';
 
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
-import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
+import {
+  createProject,
+  createTask,
+  deleteProject,
+  deleteTask,
+  getActiveProjects,
+  getAllProjects,
+  getProjectById,
+  getProjectsForGroup,
+  getTaskById,
+  updateProject,
+  updateTask,
+} from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -14,7 +26,7 @@ import {
   updateCalendarEvent,
 } from './calendar.js';
 import { draftOutlookEmail, searchOutlookEmails } from './outlook.js';
-import { RegisteredGroup } from './types.js';
+import { Project, RegisteredGroup, WorkflowStep } from './types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
@@ -29,6 +41,7 @@ export interface IpcDeps {
     registeredJids: Set<string>,
   ) => void;
   onTasksChanged: () => void;
+  onProjectsChanged: () => void;
 }
 
 let ipcWatcherRunning = false;
@@ -672,6 +685,14 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // For projects
+    projectId?: string;
+    description?: string;
+    workflow?: WorkflowStep[];
+    current_step?: number;
+    status?: string;
+    check_interval_ms?: number;
+    requestId?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -920,6 +941,187 @@ export async function processTaskIpc(
         );
       }
       break;
+
+    case 'create_project': {
+      if (!data.name || !data.workflow || !Array.isArray(data.workflow)) {
+        logger.warn({ sourceGroup }, 'Invalid create_project: missing name or workflow');
+        break;
+      }
+      const projectTargetJid = data.targetJid || data.chatJid;
+      if (!projectTargetJid) {
+        logger.warn({ sourceGroup }, 'create_project: missing targetJid/chatJid');
+        break;
+      }
+      const targetGroup = registeredGroups[projectTargetJid];
+      if (!targetGroup) {
+        logger.warn({ projectTargetJid }, 'create_project: target group not registered');
+        break;
+      }
+      if (!isMain && targetGroup.folder !== sourceGroup) {
+        logger.warn({ sourceGroup }, 'Unauthorized create_project attempt blocked');
+        break;
+      }
+      const projectId =
+        data.projectId || `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const now = new Date().toISOString();
+      const project: Project = {
+        id: projectId,
+        group_folder: targetGroup.folder,
+        chat_jid: projectTargetJid,
+        name: data.name,
+        description: data.description || '',
+        workflow: data.workflow,
+        current_step: 0,
+        status: 'pending_approval',
+        check_interval_ms: data.check_interval_ms || 300000,
+        checker_task_id: null,
+        created_at: now,
+        updated_at: now,
+      };
+      createProject(project);
+      logger.info({ projectId, sourceGroup, name: data.name }, 'Project created via IPC');
+
+      // Write response if requestId provided
+      if (data.requestId) {
+        const responsesDir = path.join(DATA_DIR, 'ipc', sourceGroup, 'responses');
+        fs.mkdirSync(responsesDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(responsesDir, `${data.requestId}.json`),
+          JSON.stringify({ requestId: data.requestId, projectId, status: 'pending_approval' }),
+        );
+      }
+      deps.onProjectsChanged();
+      break;
+    }
+
+    case 'approve_project': {
+      if (!data.projectId) break;
+      const proj = getProjectById(data.projectId);
+      if (!proj) {
+        logger.warn({ projectId: data.projectId }, 'approve_project: not found');
+        break;
+      }
+      if (!isMain && proj.group_folder !== sourceGroup) {
+        logger.warn({ sourceGroup }, 'Unauthorized approve_project attempt');
+        break;
+      }
+      if (proj.status !== 'pending_approval') {
+        logger.warn({ projectId: data.projectId, status: proj.status }, 'Project not pending approval');
+        break;
+      }
+
+      // Activate the project
+      updateProject(data.projectId, { status: 'active' });
+
+      // Create a checker scheduled task for this project
+      const checkerTaskId = `proj-checker-${data.projectId}`;
+      const checkerJid = proj.chat_jid;
+      const checkerPrompt = `You are checking on an active workflow project. Read the current projects from /workspace/ipc/current_projects.json. Find the project with id "${data.projectId}" and check its current step. Based on the step type and check_config, take the appropriate action:\n\n- If the current step is type "action": execute the action described in the step, then advance to the next step by writing an IPC file.\n- If the current step is type "wait_for" or "check": check whether the condition is met (e.g. search emails, check calendar). If met, advance. If not, do nothing (will check again next run).\n- If the current step is type "notify": send a notification to the user via IPC message, then advance.\n\nAlways update the project status via IPC after any changes. If all steps are completed, mark the project as completed.\n\nProject: ${proj.name}\nDescription: ${proj.description}`;
+
+      createTask({
+        id: checkerTaskId,
+        group_folder: proj.group_folder,
+        chat_jid: checkerJid,
+        prompt: checkerPrompt,
+        schedule_type: 'interval',
+        schedule_value: String(proj.check_interval_ms),
+        context_mode: 'group',
+        next_run: new Date(Date.now() + 5000).toISOString(), // Run almost immediately
+        status: 'active',
+        created_at: new Date().toISOString(),
+      });
+
+      updateProject(data.projectId, { checker_task_id: checkerTaskId });
+      logger.info({ projectId: data.projectId, checkerTaskId }, 'Project approved and checker task created');
+      deps.onTasksChanged();
+      deps.onProjectsChanged();
+      break;
+    }
+
+    case 'update_project': {
+      if (!data.projectId) break;
+      const proj = getProjectById(data.projectId);
+      if (!proj) {
+        logger.warn({ projectId: data.projectId }, 'update_project: not found');
+        break;
+      }
+      if (!isMain && proj.group_folder !== sourceGroup) {
+        logger.warn({ sourceGroup }, 'Unauthorized update_project attempt');
+        break;
+      }
+
+      const projUpdates: Parameters<typeof updateProject>[1] = {};
+      if (data.workflow !== undefined) projUpdates.workflow = data.workflow;
+      if (data.current_step !== undefined) projUpdates.current_step = data.current_step;
+      if (data.status !== undefined) projUpdates.status = data.status as Project['status'];
+      if (data.name !== undefined) projUpdates.name = data.name;
+      if (data.description !== undefined) projUpdates.description = data.description;
+      if (data.check_interval_ms !== undefined) projUpdates.check_interval_ms = data.check_interval_ms;
+
+      updateProject(data.projectId, projUpdates);
+
+      // If project completed or cancelled, clean up checker task
+      if (data.status === 'completed' || data.status === 'cancelled') {
+        if (proj.checker_task_id) {
+          const task = getTaskById(proj.checker_task_id);
+          if (task) {
+            deleteTask(proj.checker_task_id);
+            logger.info({ checkerTaskId: proj.checker_task_id }, 'Checker task cleaned up');
+            deps.onTasksChanged();
+          }
+        }
+      }
+
+      logger.info({ projectId: data.projectId, sourceGroup }, 'Project updated via IPC');
+      deps.onProjectsChanged();
+
+      if (data.requestId) {
+        const responsesDir = path.join(DATA_DIR, 'ipc', sourceGroup, 'responses');
+        fs.mkdirSync(responsesDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(responsesDir, `${data.requestId}.json`),
+          JSON.stringify({ requestId: data.requestId, success: true }),
+        );
+      }
+      break;
+    }
+
+    case 'get_projects': {
+      if (!data.requestId) break;
+      const responsesDir = path.join(DATA_DIR, 'ipc', sourceGroup, 'responses');
+      fs.mkdirSync(responsesDir, { recursive: true });
+
+      const projects = isMain ? getAllProjects() : getProjectsForGroup(sourceGroup);
+      const responseFile = path.join(responsesDir, `${data.requestId}.json`);
+      const tempFile = `${responseFile}.tmp`;
+      fs.writeFileSync(
+        tempFile,
+        JSON.stringify({ requestId: data.requestId, projects }, null, 2),
+      );
+      fs.renameSync(tempFile, responseFile);
+      break;
+    }
+
+    case 'cancel_project': {
+      if (!data.projectId) break;
+      const proj = getProjectById(data.projectId);
+      if (!proj) break;
+      if (!isMain && proj.group_folder !== sourceGroup) {
+        logger.warn({ sourceGroup }, 'Unauthorized cancel_project attempt');
+        break;
+      }
+      updateProject(data.projectId, { status: 'cancelled' });
+      if (proj.checker_task_id) {
+        const task = getTaskById(proj.checker_task_id);
+        if (task) {
+          deleteTask(proj.checker_task_id);
+          deps.onTasksChanged();
+        }
+      }
+      logger.info({ projectId: data.projectId, sourceGroup }, 'Project cancelled via IPC');
+      deps.onProjectsChanged();
+      break;
+    }
 
     case 'register_group':
       // Only main group can register new groups

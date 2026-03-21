@@ -19,6 +19,7 @@ import {
   ContainerOutput,
   runContainerAgent,
   writeGroupsSnapshot,
+  writeProjectsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
@@ -30,6 +31,7 @@ import {
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
+  getAllProjects,
   getAllTasks,
   getEmailThread,
   getMessagesSince,
@@ -193,7 +195,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   saveState();
 
   logger.info(
-    { group: group.name, messageCount: missedMessages.length, promptPreview: prompt.slice(0, 500) },
+    {
+      group: group.name,
+      messageCount: missedMessages.length,
+      promptPreview: prompt.slice(0, 500),
+    },
     'Processing messages',
   );
 
@@ -290,6 +296,24 @@ async function runAgent(
       schedule_value: t.schedule_value,
       status: t.status,
       next_run: t.next_run,
+    })),
+  );
+
+  // Update projects snapshot for container to read
+  const projects = getAllProjects();
+  writeProjectsSnapshot(
+    group.folder,
+    isMain,
+    projects.map((p) => ({
+      id: p.id,
+      groupFolder: p.group_folder,
+      name: p.name,
+      description: p.description,
+      workflow: p.workflow,
+      current_step: p.current_step,
+      status: p.status,
+      check_interval_ms: p.check_interval_ms,
+      updated_at: p.updated_at,
     })),
   );
 
@@ -648,6 +672,23 @@ async function main(): Promise<void> {
       }));
       for (const group of Object.values(registeredGroups)) {
         writeTasksSnapshot(group.folder, group.isMain === true, taskRows);
+      }
+    },
+    onProjectsChanged: () => {
+      const allProjects = getAllProjects();
+      const projectRows = allProjects.map((p) => ({
+        id: p.id,
+        groupFolder: p.group_folder,
+        name: p.name,
+        description: p.description,
+        workflow: p.workflow,
+        current_step: p.current_step,
+        status: p.status,
+        check_interval_ms: p.check_interval_ms,
+        updated_at: p.updated_at,
+      }));
+      for (const group of Object.values(registeredGroups)) {
+        writeProjectsSnapshot(group.folder, group.isMain === true, projectRows);
       }
     },
   });

@@ -77,6 +77,36 @@ export interface TaskRunLog {
   error: string | null;
 }
 
+export interface WorkflowStep {
+  id: number;
+  description: string;
+  type: 'action' | 'wait_for' | 'check' | 'notify';
+  status: 'pending' | 'in_progress' | 'completed' | 'skipped' | 'failed';
+  check_config?: {
+    // For 'wait_for' and 'check' steps: what to check and how often
+    check_type?: string; // e.g. 'email_response', 'calendar', 'custom'
+    check_description?: string; // Human-readable description of what to check
+    interval_ms?: number; // How often to check (default: use project's check interval)
+  };
+  result?: string | null;
+  completed_at?: string | null;
+}
+
+export interface Project {
+  id: string;
+  group_folder: string;
+  chat_jid: string;
+  name: string;
+  description: string;
+  workflow: WorkflowStep[];
+  current_step: number;
+  status: 'pending_approval' | 'active' | 'paused' | 'completed' | 'cancelled';
+  check_interval_ms: number; // How often to run the checker task (default: 300000 = 5min)
+  checker_task_id: string | null; // ID of the scheduled task that checks this project
+  created_at: string;
+  updated_at: string;
+}
+
 // --- Channel abstraction ---
 
 export interface Channel {

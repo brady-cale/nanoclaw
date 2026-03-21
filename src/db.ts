@@ -7,9 +7,11 @@ import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
   NewMessage,
+  Project,
   RegisteredGroup,
   ScheduledTask,
   TaskRunLog,
+  WorkflowStep,
 } from './types.js';
 
 let db: Database.Database;
@@ -162,6 +164,26 @@ function createSchema(database: Database.Database): void {
       id TEXT PRIMARY KEY,
       processed_at TEXT NOT NULL
     );
+  `);
+
+  // Projects — long-running async workflows with step tracking
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      group_folder TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      workflow TEXT NOT NULL,
+      current_step INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'pending_approval',
+      check_interval_ms INTEGER DEFAULT 300000,
+      checker_task_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
+    CREATE INDEX IF NOT EXISTS idx_projects_group ON projects(group_folder);
   `);
 }
 
@@ -527,6 +549,132 @@ export function logTaskRun(log: TaskRunLog): void {
   );
 }
 
+// --- Project accessors ---
+
+export function createProject(project: Project): void {
+  db.prepare(
+    `INSERT INTO projects (id, group_folder, chat_jid, name, description, workflow, current_step, status, check_interval_ms, checker_task_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    project.id,
+    project.group_folder,
+    project.chat_jid,
+    project.name,
+    project.description,
+    JSON.stringify(project.workflow),
+    project.current_step,
+    project.status,
+    project.check_interval_ms,
+    project.checker_task_id,
+    project.created_at,
+    project.updated_at,
+  );
+}
+
+export function getProjectById(id: string): Project | undefined {
+  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as
+    | (Omit<Project, 'workflow'> & { workflow: string })
+    | undefined;
+  if (!row) return undefined;
+  return { ...row, workflow: JSON.parse(row.workflow) as WorkflowStep[] };
+}
+
+export function getProjectsForGroup(groupFolder: string): Project[] {
+  const rows = db
+    .prepare(
+      'SELECT * FROM projects WHERE group_folder = ? ORDER BY created_at DESC',
+    )
+    .all(groupFolder) as Array<Omit<Project, 'workflow'> & { workflow: string }>;
+  return rows.map((r) => ({
+    ...r,
+    workflow: JSON.parse(r.workflow) as WorkflowStep[],
+  }));
+}
+
+export function getActiveProjects(): Project[] {
+  const rows = db
+    .prepare(
+      "SELECT * FROM projects WHERE status = 'active' ORDER BY updated_at",
+    )
+    .all() as Array<Omit<Project, 'workflow'> & { workflow: string }>;
+  return rows.map((r) => ({
+    ...r,
+    workflow: JSON.parse(r.workflow) as WorkflowStep[],
+  }));
+}
+
+export function getAllProjects(): Project[] {
+  const rows = db
+    .prepare('SELECT * FROM projects ORDER BY created_at DESC')
+    .all() as Array<Omit<Project, 'workflow'> & { workflow: string }>;
+  return rows.map((r) => ({
+    ...r,
+    workflow: JSON.parse(r.workflow) as WorkflowStep[],
+  }));
+}
+
+export function updateProject(
+  id: string,
+  updates: Partial<
+    Pick<
+      Project,
+      | 'workflow'
+      | 'current_step'
+      | 'status'
+      | 'check_interval_ms'
+      | 'checker_task_id'
+      | 'name'
+      | 'description'
+    >
+  >,
+): void {
+  const fields: string[] = [];
+  const values: unknown[] = [];
+
+  if (updates.workflow !== undefined) {
+    fields.push('workflow = ?');
+    values.push(JSON.stringify(updates.workflow));
+  }
+  if (updates.current_step !== undefined) {
+    fields.push('current_step = ?');
+    values.push(updates.current_step);
+  }
+  if (updates.status !== undefined) {
+    fields.push('status = ?');
+    values.push(updates.status);
+  }
+  if (updates.check_interval_ms !== undefined) {
+    fields.push('check_interval_ms = ?');
+    values.push(updates.check_interval_ms);
+  }
+  if (updates.checker_task_id !== undefined) {
+    fields.push('checker_task_id = ?');
+    values.push(updates.checker_task_id);
+  }
+  if (updates.name !== undefined) {
+    fields.push('name = ?');
+    values.push(updates.name);
+  }
+  if (updates.description !== undefined) {
+    fields.push('description = ?');
+    values.push(updates.description);
+  }
+
+  if (fields.length === 0) return;
+
+  fields.push('updated_at = ?');
+  values.push(new Date().toISOString());
+  values.push(id);
+
+  db.prepare(
+    `UPDATE projects SET ${fields.join(', ')} WHERE id = ?`,
+  ).run(...values);
+}
+
+export function deleteProject(id: string): void {
+  db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+}
+
 // --- Router state accessors ---
 
 export function getRouterState(key: string): string | undefined {
@@ -702,7 +850,9 @@ export function upsertEmailThread(thread: EmailThreadRow): void {
 // --- Outlook processed IDs ---
 
 export function isOutlookProcessed(id: string): boolean {
-  return !!db.prepare('SELECT 1 FROM outlook_processed_ids WHERE id = ?').get(id);
+  return !!db
+    .prepare('SELECT 1 FROM outlook_processed_ids WHERE id = ?')
+    .get(id);
 }
 
 export function markOutlookProcessed(id: string): void {

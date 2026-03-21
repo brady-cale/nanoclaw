@@ -395,7 +395,13 @@ export async function runContainerAgent(
       for (const line of lines) {
         if (!line) continue;
         // Promote agent-runner tool/activity lines to info so they appear in default logs
-        if (line.includes('[agent-runner] [tool]') || line.includes('[agent-runner] [msg') || line.includes('[agent-runner] Result') || line.includes('[agent-runner] Starting query') || line.includes('[agent-runner] Session initialized')) {
+        if (
+          line.includes('[agent-runner] [tool]') ||
+          line.includes('[agent-runner] [msg') ||
+          line.includes('[agent-runner] Result') ||
+          line.includes('[agent-runner] Starting query') ||
+          line.includes('[agent-runner] Session initialized')
+        ) {
           logger.info({ container: group.folder }, line);
         } else {
           logger.debug({ container: group.folder }, line);
@@ -683,6 +689,32 @@ export function writeTasksSnapshot(
 
   const tasksFile = path.join(groupIpcDir, 'current_tasks.json');
   fs.writeFileSync(tasksFile, JSON.stringify(filteredTasks, null, 2));
+}
+
+export function writeProjectsSnapshot(
+  groupFolder: string,
+  isMain: boolean,
+  projects: Array<{
+    id: string;
+    groupFolder: string;
+    name: string;
+    description: string;
+    workflow: unknown[];
+    current_step: number;
+    status: string;
+    check_interval_ms: number;
+    updated_at: string;
+  }>,
+): void {
+  const groupIpcDir = resolveGroupIpcPath(groupFolder);
+  fs.mkdirSync(groupIpcDir, { recursive: true });
+
+  const filteredProjects = isMain
+    ? projects
+    : projects.filter((p) => p.groupFolder === groupFolder);
+
+  const projectsFile = path.join(groupIpcDir, 'current_projects.json');
+  fs.writeFileSync(projectsFile, JSON.stringify(filteredProjects, null, 2));
 }
 
 export interface AvailableGroup {
