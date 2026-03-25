@@ -249,6 +249,13 @@ function buildContainerArgs(
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
   }
 
+  // Pass Atlassian credentials to container for MCP server
+  if (process.env.ATLASSIAN_BASE_URL) {
+    args.push('-e', `ATLASSIAN_BASE_URL=${process.env.ATLASSIAN_BASE_URL}`);
+    args.push('-e', `ATLASSIAN_EMAIL=${process.env.ATLASSIAN_EMAIL}`);
+    args.push('-e', `ATLASSIAN_API_TOKEN=${process.env.ATLASSIAN_API_TOKEN}`);
+  }
+
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
 

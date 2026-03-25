@@ -407,7 +407,8 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        'mcp__atlassian__*'
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -423,6 +424,17 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
+        ...(process.env.ATLASSIAN_BASE_URL ? {
+          atlassian: {
+            command: 'npx',
+            args: ['mcp-atlassian'],
+            env: {
+              ATLASSIAN_BASE_URL: process.env.ATLASSIAN_BASE_URL,
+              ATLASSIAN_EMAIL: process.env.ATLASSIAN_EMAIL || '',
+              ATLASSIAN_API_TOKEN: process.env.ATLASSIAN_API_TOKEN || '',
+            },
+          },
+        } : {}),
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
