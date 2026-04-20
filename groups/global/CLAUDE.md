@@ -82,6 +82,8 @@ Each group's CLAUDE.md specifies its own formatting rules. Follow the group-spec
 
 When someone asks a question about the team, project, process, or history, use the following approach. Do not answer from memory alone — always search first.
 
+> **Before reaching for any of these tools, check `/workspace/global/installed-tools/` to confirm the integration is installed.** Each integration has a doc file there (`atlassian.md`, `outlook.md`, `calendar.md`, `github.md`, `gcloud.md`, etc.) only when it has been wired up. If the doc is missing, skip that source and try the next one — don't attempt the tool, it won't be registered.
+
 ### Which tool for which question
 
 **Confluence** — documentation, process, architecture:
