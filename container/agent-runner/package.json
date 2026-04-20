@@ -13,7 +13,6 @@
     "@modelcontextprotocol/sdk": "^1.12.1",
     "cron-parser": "^5.0.0",
     "jsdom": "^26.1.0",
-    "@google-cloud/gcloud-mcp": "^0.1.0",
     "mcp-atlassian": "^2.1.0",
     "zod": "^4.0.0"
   },

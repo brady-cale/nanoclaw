@@ -110,17 +110,12 @@ When someone asks a question about the team, project, process, or history, use t
 - Use `mcp__github__search_code` with `org:Tereina` to scope to the organization
 - Use `mcp__github__get_file_contents` to read specific files when you know the path
 
-**GCP** — infrastructure, deployments, logs:
-- What version is deployed? What errors are in the logs?
-- What services are running? What's the database configuration?
-- Use `mcp__gcloud__run_gcloud_command` for any gcloud CLI command (read-only)
-
 ### Search sequence for open-ended questions
 
 1. Identify the question type using the table above.
-2. Run the most targeted search first (usually Confluence or Jira for process questions, GitHub for code questions, GCP for infrastructure questions).
+2. Run the most targeted search first (usually Confluence or Jira for process questions, GitHub for code questions).
 3. If the first search returns nothing useful, broaden the query (fewer keywords, different space/project/repo).
-4. If still nothing, try a second source (e.g., GitHub if Confluence had nothing about an implementation detail, or GCP logs if Jira says there's a bug).
+4. If still nothing, try a second source (e.g., GitHub if Confluence had nothing about an implementation detail).
 5. Synthesize what you found across sources before answering.
 
 ### When you cannot find an answer

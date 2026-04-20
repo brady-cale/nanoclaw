@@ -578,6 +578,72 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       }),
                     );
                   }
+              } else if (
+                data.type === 'gcloud_command' &&
+                data.requestId &&
+                Array.isArray(data.command)
+              ) {
+                const responsesDir = path.join(
+                  ipcBaseDir,
+                  sourceGroup,
+                  'responses',
+                );
+                fs.mkdirSync(responsesDir, { recursive: true });
+                const responseFile = path.join(
+                  responsesDir,
+                  `${data.requestId}.json`,
+                );
+                if (!isMain) {
+                  logger.warn(
+                    { sourceGroup },
+                    'Unauthorized gcloud_command attempt blocked (main only)',
+                  );
+                  fs.writeFileSync(
+                    responseFile,
+                    JSON.stringify({
+                      requestId: data.requestId,
+                      error: 'Only the main group can run gcloud commands',
+                    }),
+                  );
+                } else
+                  try {
+                    const { runGcloudCommand } = await import('./gcloud.js');
+                    const result = await runGcloudCommand({
+                      command: data.command,
+                      projectId: data.projectId,
+                    });
+                    const tempFile = `${responseFile}.tmp`;
+                    fs.writeFileSync(
+                      tempFile,
+                      JSON.stringify(
+                        { requestId: data.requestId, result },
+                        null,
+                        2,
+                      ),
+                    );
+                    fs.renameSync(tempFile, responseFile);
+                    logger.info(
+                      {
+                        sourceGroup,
+                        requestId: data.requestId,
+                        exitCode: result.exitCode,
+                      },
+                      'IPC gcloud command completed',
+                    );
+                  } catch (err) {
+                    logger.error(
+                      { sourceGroup, requestId: data.requestId, err },
+                      'IPC gcloud command failed',
+                    );
+                    fs.writeFileSync(
+                      responseFile,
+                      JSON.stringify({
+                        requestId: data.requestId,
+                        error:
+                          err instanceof Error ? err.message : String(err),
+                      }),
+                    );
+                  }
               } else if (data.type === 'message' && data.chatJid && data.text) {
                 // Authorization: verify this group can send to this chatJid
                 const targetGroup = registeredGroups[data.chatJid];

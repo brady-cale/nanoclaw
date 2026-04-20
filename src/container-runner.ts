@@ -4,7 +4,6 @@
  */
 import { ChildProcess, exec, spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 import {
@@ -261,25 +260,6 @@ function buildContainerArgs(
   const githubEnv = readEnvFile(['GITHUB_TOKEN']);
   if (githubEnv.GITHUB_TOKEN) {
     args.push('-e', `GITHUB_TOKEN=${githubEnv.GITHUB_TOKEN}`);
-  }
-
-  // Mount GCP credentials for gcloud MCP server
-  // Check .env first, then fall back to default ADC path
-  const gcpEnv = readEnvFile(['GOOGLE_APPLICATION_CREDENTIALS']);
-  const gcpCredPath =
-    gcpEnv.GOOGLE_APPLICATION_CREDENTIALS ||
-    path.join(
-      os.homedir(),
-      '.config/gcloud/application_default_credentials.json',
-    );
-  if (fs.existsSync(gcpCredPath)) {
-    const containerCredPath = '/workspace/.gcp-credentials.json';
-    args.push(
-      '-v',
-      `${gcpCredPath}:${containerCredPath}:ro`,
-      '-e',
-      `GOOGLE_APPLICATION_CREDENTIALS=${containerCredPath}`,
-    );
   }
 
   // Runtime-specific args for host gateway resolution

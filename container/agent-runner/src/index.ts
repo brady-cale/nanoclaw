@@ -391,13 +391,6 @@ function buildMcpServers(mcpServerPath: string, containerInput: ContainerInput):
       headers: { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` },
     };
   }
-  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-    servers.gcloud = {
-      command: 'node',
-      args: ['/app/node_modules/@google-cloud/gcloud-mcp/dist/src/index.js'],
-      env: { GOOGLE_APPLICATION_CREDENTIALS: process.env.GOOGLE_APPLICATION_CREDENTIALS },
-    };
-  }
   return servers;
 }
 
@@ -452,8 +445,6 @@ const ALLOWED_TOOLS = [
   'mcp__github__get_team_members',
   'mcp__github__get_label',
   'mcp__github__get_copilot_job_status',
-  // GCP: read-only (enforced by agent instructions in gcloud.md)
-  'mcp__gcloud__run_gcloud_command',
 ];
 
 type QueryState = { newSessionId: string | undefined; lastAssistantUuid: string | undefined };
