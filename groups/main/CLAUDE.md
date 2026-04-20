@@ -1,16 +1,19 @@
-# Teri — Main Channel (WhatsApp)
+# Teri — Main Channel (Teams)
 
-This is the **main WhatsApp channel** with elevated privileges. Global instructions apply here. This file adds admin-specific context and WhatsApp formatting rules.
+This is the **main Teams channel** with elevated privileges. Global instructions apply here. This file adds admin-specific context and Teams formatting rules.
 
-## WhatsApp Formatting
+## Teams Formatting
 
-Do NOT use markdown headings (##) in WhatsApp messages. Only use:
-- *Bold* (single asterisks) (NEVER **double asterisks**)
-- _Italic_ (underscores)
-- • Bullets (bullet points)
-- ```Code blocks``` (triple backticks)
+Teams supports rich markdown — use it for clarity:
+- **Bold** and *italic* (standard markdown asterisks)
+- ## Headings, ordered/unordered lists, and tables
+- `inline code` and ```code blocks``` (with language tags)
+- Links: [text](url)
+- Block quotes with `>`
 
-Keep messages clean and readable for WhatsApp.
+Keep messages reasonably short — Teams truncates very long messages with a "see more" expander. For long content, lead with a one-paragraph summary and offer details on request.
+
+When mentioning users, prefer their display name in plain text rather than trying to construct an `@mention` token; the Teams channel doesn't currently render `@mention` syntax from agent output.
 
 ---
 
@@ -40,8 +43,8 @@ Available groups are provided in `/workspace/ipc/available_groups.json`:
 {
   "groups": [
     {
-      "jid": "120363336345536173@g.us",
-      "name": "Family Chat",
+      "jid": "19:abc123def456@thread.v2",
+      "name": "Engineering",
       "lastActivity": "2026-01-31T12:00:00.000Z",
       "isRegistered": false
     }
@@ -50,7 +53,7 @@ Available groups are provided in `/workspace/ipc/available_groups.json`:
 }
 ```
 
-Groups are ordered by most recent activity. The list is synced from WhatsApp daily.
+Groups are ordered by most recent activity. The list is synced from each configured channel (Teams, Outlook, WhatsApp, Telegram, etc.) on its own polling interval.
 
 If a group the user mentions isn't in the list, request a fresh sync:
 
@@ -64,9 +67,9 @@ Then wait a moment and re-read `available_groups.json`.
 
 ```bash
 sqlite3 /workspace/project/store/messages.db "
-  SELECT jid, name, last_message_time
+  SELECT jid, name, channel, last_message_time
   FROM chats
-  WHERE jid LIKE '%@g.us' AND jid != '__group_sync__'
+  WHERE is_group = 1 AND jid != '__group_sync__'
   ORDER BY last_message_time DESC
   LIMIT 10;
 "
@@ -78,17 +81,17 @@ Groups are registered in the SQLite `registered_groups` table:
 
 ```json
 {
-  "1234567890-1234567890@g.us": {
-    "name": "Family Chat",
-    "folder": "whatsapp_family-chat",
-    "trigger": "@Andy",
-    "added_at": "2024-01-31T12:00:00.000Z"
+  "19:abc123def456@thread.v2": {
+    "name": "Engineering",
+    "folder": "teams_engineering",
+    "trigger": "@Teri",
+    "added_at": "2026-01-31T12:00:00.000Z"
   }
 }
 ```
 
 Fields:
-- **Key**: The chat JID (unique identifier — WhatsApp, Telegram, Slack, Discord, etc.)
+- **Key**: The chat JID (unique identifier — Teams, Outlook, WhatsApp, Telegram, Slack, Discord, etc.)
 - **name**: Display name for the group
 - **folder**: Channel-prefixed folder name under `groups/` for this group's files and memory
 - **trigger**: The trigger word (usually same as global, but could differ)
@@ -111,10 +114,10 @@ Fields:
 5. Optionally create an initial `CLAUDE.md` for the group
 
 Folder naming convention — channel prefix with underscore separator:
+- Teams "Engineering" → `teams_engineering`
+- Outlook "alice@company.com" → `outlook_alice-at-company-com`
 - WhatsApp "Family Chat" → `whatsapp_family-chat`
 - Telegram "Dev Team" → `telegram_dev-team`
-- Discord "General" → `discord_general`
-- Slack "Engineering" → `slack_engineering`
 - Use lowercase, hyphens for the group name part
 
 #### Adding Additional Directories for a Group
@@ -123,10 +126,10 @@ Groups can have extra directories mounted. Add `containerConfig` to their entry:
 
 ```json
 {
-  "1234567890@g.us": {
-    "name": "Dev Team",
-    "folder": "dev-team",
-    "trigger": "@Andy",
+  "19:abc123def456@thread.v2": {
+    "name": "Engineering",
+    "folder": "teams_engineering",
+    "trigger": "@Teri",
     "added_at": "2026-01-31T12:00:00Z",
     "containerConfig": {
       "additionalMounts": [
@@ -198,7 +201,7 @@ You can read and write to `/workspace/global/CLAUDE.md` for facts that should ap
 
 ## Scheduling for Other Groups
 
-When scheduling tasks for other groups, use the `target_group_jid` parameter with the group's JID from `registered_groups.json`:
-- `schedule_task(prompt: "...", schedule_type: "cron", schedule_value: "0 9 * * 1", target_group_jid: "120363336345536173@g.us")`
+When scheduling tasks for other groups, use the `target_group_jid` parameter with the group's JID from `registered_groups`:
+- `schedule_task(prompt: "...", schedule_type: "cron", schedule_value: "0 9 * * 1", target_group_jid: "19:abc123def456@thread.v2")`
 
 The task will run in that group's context with access to their files and memory.
