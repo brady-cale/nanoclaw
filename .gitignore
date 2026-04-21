@@ -23,6 +23,9 @@ groups/global/*
 *.keys.json
 .env
 
+# direnv (per-developer convenience, not shared)
+.envrc
+
 # SQLite databases
 *.db
 
