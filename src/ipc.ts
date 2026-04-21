@@ -28,6 +28,195 @@ import {
 import { draftOutlookEmail, searchOutlookEmails } from './outlook.js';
 import { Project, RegisteredGroup, WorkflowStep } from './types.js';
 
+// ============================================================================
+// Request/response verb dispatcher
+// ============================================================================
+//
+// These IPC verbs use a request/response pattern: the agent writes a JSON
+// file with `type`, `requestId`, and args; the host runs the handler and
+// writes a matching response file at `<group>/responses/<requestId>.json`.
+//
+// To add a new verb: append an entry to REQUEST_HANDLERS and add a matching
+// tool in container/agent-runner/src/ipc-mcp-stdio.ts that writes the
+// request file and polls for the response.
+//
+// Fire-and-forget verbs (e.g. `message`, `draft_outlook_email`) do NOT use
+// this dispatcher — they're handled inline in processIpcFiles.
+
+interface RequestHandler {
+  type: string;
+  mainOnly: boolean;
+  /** Human-readable action name used in the unauthorized-attempt error. */
+  description: string;
+  /** Returns the response payload; it's merged with `{ requestId }`. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  handle: (data: any) => Promise<Record<string, unknown>>;
+}
+
+const REQUEST_HANDLERS: RequestHandler[] = [
+  {
+    type: 'archive_email',
+    mainOnly: true,
+    description: 'archive emails',
+    handle: async (data) => {
+      const { graphPost } = await import('./m365-auth.js');
+      await graphPost(`/me/messages/${data.messageId}/move`, {
+        destinationId: 'archive',
+      });
+      return { success: true };
+    },
+  },
+  {
+    type: 'search_emails',
+    mainOnly: true,
+    description: 'search emails',
+    handle: async (data) => {
+      const results = await searchOutlookEmails({
+        query: data.query,
+        from: data.from,
+        subject: data.subject,
+        after: data.after,
+        before: data.before,
+        top: data.top ? parseInt(data.top, 10) : undefined,
+      });
+      return { results, totalCount: results.length };
+    },
+  },
+  {
+    type: 'search_calendar',
+    mainOnly: true,
+    description: 'search calendar',
+    handle: async (data) => {
+      const results = await searchCalendarEvents({
+        after: data.after,
+        before: data.before,
+        query: data.query,
+        attendee: data.attendee,
+        top: data.top ? parseInt(data.top, 10) : undefined,
+      });
+      return { results, totalCount: results.length };
+    },
+  },
+  {
+    type: 'create_calendar_event',
+    mainOnly: true,
+    description: 'create calendar events',
+    handle: async (data) => {
+      const result = await createCalendarEvent({
+        subject: data.subject,
+        start: data.start,
+        end: data.end,
+        attendees: data.attendees,
+        body: data.body,
+        location: data.location,
+        isTeamsMeeting:
+          data.isTeamsMeeting === true || data.isTeamsMeeting === 'true',
+        isAllDay: data.isAllDay === true || data.isAllDay === 'true',
+      });
+      return { result };
+    },
+  },
+  {
+    type: 'update_calendar_event',
+    mainOnly: true,
+    description: 'update calendar events',
+    handle: async (data) => {
+      const isTeamsMeeting =
+        data.isTeamsMeeting === true || data.isTeamsMeeting === 'true'
+          ? true
+          : data.isTeamsMeeting === false || data.isTeamsMeeting === 'false'
+            ? false
+            : undefined;
+      const result = await updateCalendarEvent({
+        eventId: data.eventId,
+        subject: data.subject,
+        start: data.start,
+        end: data.end,
+        attendees: data.attendees,
+        body: data.body,
+        location: data.location,
+        isTeamsMeeting,
+      });
+      return { result };
+    },
+  },
+  {
+    type: 'gcloud_command',
+    mainOnly: true,
+    description: 'run gcloud commands',
+    handle: async (data) => {
+      if (!Array.isArray(data.command)) {
+        throw new Error('command must be an array of strings');
+      }
+      const { runGcloudCommand } = await import('./gcloud.js');
+      const result = await runGcloudCommand({
+        command: data.command,
+        projectId: data.projectId,
+      });
+      return { result };
+    },
+  },
+];
+
+/**
+ * Atomically write `<requestId>.json` into the group's responses/ directory,
+ * merging `payload` with `{ requestId }`. Uses a `.tmp` + rename so readers
+ * never see a partial file.
+ */
+function writeResponseFile(
+  ipcBaseDir: string,
+  sourceGroup: string,
+  requestId: string,
+  payload: Record<string, unknown>,
+): void {
+  const responsesDir = path.join(ipcBaseDir, sourceGroup, 'responses');
+  fs.mkdirSync(responsesDir, { recursive: true });
+  const responseFile = path.join(responsesDir, `${requestId}.json`);
+  const tempFile = `${responseFile}.tmp`;
+  fs.writeFileSync(
+    tempFile,
+    JSON.stringify({ requestId, ...payload }, null, 2),
+  );
+  fs.renameSync(tempFile, responseFile);
+}
+
+/**
+ * Enforce main-only auth (if required), run the handler, and write the
+ * response (success or error) to the group's responses/ directory.
+ */
+async function dispatchRequestVerb(
+  handler: RequestHandler,
+  data: { requestId: string; [k: string]: unknown },
+  isMain: boolean,
+  sourceGroup: string,
+  ipcBaseDir: string,
+): Promise<void> {
+  const { requestId } = data;
+  const { type } = handler;
+
+  if (handler.mainOnly && !isMain) {
+    logger.warn(
+      { sourceGroup, type },
+      `Unauthorized ${type} attempt blocked (main only)`,
+    );
+    writeResponseFile(ipcBaseDir, sourceGroup, requestId, {
+      error: `Only the main group can ${handler.description}`,
+    });
+    return;
+  }
+
+  try {
+    const payload = await handler.handle(data);
+    writeResponseFile(ipcBaseDir, sourceGroup, requestId, payload);
+    logger.info({ sourceGroup, type, requestId }, `IPC ${type} completed`);
+  } catch (err) {
+    logger.error({ sourceGroup, type, requestId, err }, `IPC ${type} failed`);
+    writeResponseFile(ipcBaseDir, sourceGroup, requestId, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
@@ -163,421 +352,20 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       'IPC outlook email draft failed',
                     );
                   }
-              } else if (data.type === 'archive_email' && data.requestId) {
-                if (!isMain) {
-                  logger.warn(
-                    { sourceGroup },
-                    'Unauthorized archive_email attempt blocked (main only)',
-                  );
-                  const responsesDir = path.join(
-                    ipcBaseDir,
-                    sourceGroup,
-                    'responses',
-                  );
-                  fs.mkdirSync(responsesDir, { recursive: true });
-                  fs.writeFileSync(
-                    path.join(responsesDir, `${data.requestId}.json`),
-                    JSON.stringify({
-                      requestId: data.requestId,
-                      error: 'Only the main group can archive emails',
-                    }),
-                  );
-                } else
-                  // Archive email by moving to Archive folder
-                  try {
-                    const { graphPost } = await import('./m365-auth.js');
-                    await graphPost(`/me/messages/${data.messageId}/move`, {
-                      destinationId: 'archive',
-                    });
-                    const responsesDir = path.join(
-                      ipcBaseDir,
-                      sourceGroup,
-                      'responses',
-                    );
-                    fs.mkdirSync(responsesDir, { recursive: true });
-                    const responseFile = path.join(
-                      responsesDir,
-                      `${data.requestId}.json`,
-                    );
-                    fs.writeFileSync(
-                      responseFile,
-                      JSON.stringify({
-                        requestId: data.requestId,
-                        success: true,
-                      }),
-                    );
-                    logger.info(
-                      { sourceGroup, messageId: data.messageId },
-                      'IPC email archived',
-                    );
-                  } catch (err) {
-                    const responsesDir = path.join(
-                      ipcBaseDir,
-                      sourceGroup,
-                      'responses',
-                    );
-                    fs.mkdirSync(responsesDir, { recursive: true });
-                    const responseFile = path.join(
-                      responsesDir,
-                      `${data.requestId}.json`,
-                    );
-                    fs.writeFileSync(
-                      responseFile,
-                      JSON.stringify({
-                        requestId: data.requestId,
-                        error: err instanceof Error ? err.message : String(err),
-                      }),
-                    );
-                    logger.error(
-                      { sourceGroup, messageId: data.messageId, err },
-                      'IPC email archive failed',
-                    );
-                  }
-              } else if (data.type === 'search_emails' && data.requestId) {
-                if (!isMain) {
-                  logger.warn(
-                    { sourceGroup },
-                    'Unauthorized search_emails attempt blocked (main only)',
-                  );
-                  const responsesDir = path.join(
-                    ipcBaseDir,
-                    sourceGroup,
-                    'responses',
-                  );
-                  fs.mkdirSync(responsesDir, { recursive: true });
-                  fs.writeFileSync(
-                    path.join(responsesDir, `${data.requestId}.json`),
-                    JSON.stringify({
-                      requestId: data.requestId,
-                      results: [],
-                      totalCount: 0,
-                      error: 'Only the main group can search emails',
-                    }),
-                  );
-                } else
-                  // Search emails via Graph API and write response file
-                  try {
-                    const results = await searchOutlookEmails({
-                      query: data.query,
-                      from: data.from,
-                      subject: data.subject,
-                      after: data.after,
-                      before: data.before,
-                      top: data.top ? parseInt(data.top, 10) : undefined,
-                    });
-                    const responsesDir = path.join(
-                      ipcBaseDir,
-                      sourceGroup,
-                      'responses',
-                    );
-                    fs.mkdirSync(responsesDir, { recursive: true });
-                    const responseFile = path.join(
-                      responsesDir,
-                      `${data.requestId}.json`,
-                    );
-                    const tempFile = `${responseFile}.tmp`;
-                    fs.writeFileSync(
-                      tempFile,
-                      JSON.stringify(
-                        {
-                          requestId: data.requestId,
-                          results,
-                          totalCount: results.length,
-                        },
-                        null,
-                        2,
-                      ),
-                    );
-                    fs.renameSync(tempFile, responseFile);
-                    logger.info(
-                      {
-                        sourceGroup,
-                        requestId: data.requestId,
-                        resultCount: results.length,
-                      },
-                      'IPC email search completed',
-                    );
-                  } catch (err) {
-                    logger.error(
-                      { sourceGroup, requestId: data.requestId, err },
-                      'IPC email search failed',
-                    );
-                    // Write error response so agent doesn't hang
-                    const responsesDir = path.join(
-                      ipcBaseDir,
-                      sourceGroup,
-                      'responses',
-                    );
-                    fs.mkdirSync(responsesDir, { recursive: true });
-                    const responseFile = path.join(
-                      responsesDir,
-                      `${data.requestId}.json`,
-                    );
-                    fs.writeFileSync(
-                      responseFile,
-                      JSON.stringify({
-                        requestId: data.requestId,
-                        results: [],
-                        totalCount: 0,
-                        error: err instanceof Error ? err.message : String(err),
-                      }),
-                    );
-                  }
-              } else if (data.type === 'search_calendar' && data.requestId) {
-                if (!isMain) {
-                  logger.warn(
-                    { sourceGroup },
-                    'Unauthorized search_calendar attempt blocked (main only)',
-                  );
-                  const responsesDir = path.join(
-                    ipcBaseDir,
-                    sourceGroup,
-                    'responses',
-                  );
-                  fs.mkdirSync(responsesDir, { recursive: true });
-                  fs.writeFileSync(
-                    path.join(responsesDir, `${data.requestId}.json`),
-                    JSON.stringify({
-                      requestId: data.requestId,
-                      results: [],
-                      totalCount: 0,
-                      error: 'Only the main group can search calendar',
-                    }),
-                  );
-                } else
-                  try {
-                    const results = await searchCalendarEvents({
-                      after: data.after,
-                      before: data.before,
-                      query: data.query,
-                      attendee: data.attendee,
-                      top: data.top ? parseInt(data.top, 10) : undefined,
-                    });
-                    const responsesDir = path.join(
-                      ipcBaseDir,
-                      sourceGroup,
-                      'responses',
-                    );
-                    fs.mkdirSync(responsesDir, { recursive: true });
-                    const responseFile = path.join(
-                      responsesDir,
-                      `${data.requestId}.json`,
-                    );
-                    const tempFile = `${responseFile}.tmp`;
-                    fs.writeFileSync(
-                      tempFile,
-                      JSON.stringify(
-                        {
-                          requestId: data.requestId,
-                          results,
-                          totalCount: results.length,
-                        },
-                        null,
-                        2,
-                      ),
-                    );
-                    fs.renameSync(tempFile, responseFile);
-                    logger.info(
-                      {
-                        sourceGroup,
-                        requestId: data.requestId,
-                        resultCount: results.length,
-                      },
-                      'IPC calendar search completed',
-                    );
-                  } catch (err) {
-                    logger.error(
-                      { sourceGroup, requestId: data.requestId, err },
-                      'IPC calendar search failed',
-                    );
-                    const responsesDir = path.join(
-                      ipcBaseDir,
-                      sourceGroup,
-                      'responses',
-                    );
-                    fs.mkdirSync(responsesDir, { recursive: true });
-                    fs.writeFileSync(
-                      path.join(responsesDir, `${data.requestId}.json`),
-                      JSON.stringify({
-                        requestId: data.requestId,
-                        results: [],
-                        totalCount: 0,
-                        error: err instanceof Error ? err.message : String(err),
-                      }),
-                    );
-                  }
               } else if (
-                data.type === 'create_calendar_event' &&
-                data.requestId
+                REQUEST_HANDLERS.some((h) => h.type === data.type) &&
+                typeof data.requestId === 'string'
               ) {
-                if (!isMain) {
-                  logger.warn(
-                    { sourceGroup },
-                    'Unauthorized create_calendar_event attempt blocked (main only)',
-                  );
-                  const responsesDir = path.join(
-                    ipcBaseDir,
-                    sourceGroup,
-                    'responses',
-                  );
-                  fs.mkdirSync(responsesDir, { recursive: true });
-                  fs.writeFileSync(
-                    path.join(responsesDir, `${data.requestId}.json`),
-                    JSON.stringify({
-                      requestId: data.requestId,
-                      error: 'Only the main group can create calendar events',
-                    }),
-                  );
-                } else
-                  try {
-                    const result = await createCalendarEvent({
-                      subject: data.subject,
-                      start: data.start,
-                      end: data.end,
-                      attendees: data.attendees,
-                      body: data.body,
-                      location: data.location,
-                      isTeamsMeeting:
-                        data.isTeamsMeeting === true ||
-                        data.isTeamsMeeting === 'true',
-                      isAllDay:
-                        data.isAllDay === true || data.isAllDay === 'true',
-                    });
-                    const responsesDir = path.join(
-                      ipcBaseDir,
-                      sourceGroup,
-                      'responses',
-                    );
-                    fs.mkdirSync(responsesDir, { recursive: true });
-                    const responseFile = path.join(
-                      responsesDir,
-                      `${data.requestId}.json`,
-                    );
-                    const tempFile = `${responseFile}.tmp`;
-                    fs.writeFileSync(
-                      tempFile,
-                      JSON.stringify(
-                        { requestId: data.requestId, result },
-                        null,
-                        2,
-                      ),
-                    );
-                    fs.renameSync(tempFile, responseFile);
-                    logger.info(
-                      {
-                        sourceGroup,
-                        requestId: data.requestId,
-                        eventId: result.id,
-                      },
-                      'IPC calendar event created',
-                    );
-                  } catch (err) {
-                    logger.error(
-                      { sourceGroup, requestId: data.requestId, err },
-                      'IPC calendar event creation failed',
-                    );
-                    const responsesDir = path.join(
-                      ipcBaseDir,
-                      sourceGroup,
-                      'responses',
-                    );
-                    fs.mkdirSync(responsesDir, { recursive: true });
-                    fs.writeFileSync(
-                      path.join(responsesDir, `${data.requestId}.json`),
-                      JSON.stringify({
-                        requestId: data.requestId,
-                        error: err instanceof Error ? err.message : String(err),
-                      }),
-                    );
-                  }
-              } else if (
-                data.type === 'update_calendar_event' &&
-                data.requestId
-              ) {
-                if (!isMain) {
-                  logger.warn(
-                    { sourceGroup },
-                    'Unauthorized update_calendar_event attempt blocked (main only)',
-                  );
-                  const responsesDir = path.join(
-                    ipcBaseDir,
-                    sourceGroup,
-                    'responses',
-                  );
-                  fs.mkdirSync(responsesDir, { recursive: true });
-                  fs.writeFileSync(
-                    path.join(responsesDir, `${data.requestId}.json`),
-                    JSON.stringify({
-                      requestId: data.requestId,
-                      error: 'Only the main group can update calendar events',
-                    }),
-                  );
-                } else
-                  try {
-                    const result = await updateCalendarEvent({
-                      eventId: data.eventId,
-                      subject: data.subject,
-                      start: data.start,
-                      end: data.end,
-                      attendees: data.attendees,
-                      body: data.body,
-                      location: data.location,
-                      isTeamsMeeting:
-                        data.isTeamsMeeting === true ||
-                        data.isTeamsMeeting === 'true'
-                          ? true
-                          : data.isTeamsMeeting === false ||
-                              data.isTeamsMeeting === 'false'
-                            ? false
-                            : undefined,
-                    });
-                    const responsesDir = path.join(
-                      ipcBaseDir,
-                      sourceGroup,
-                      'responses',
-                    );
-                    fs.mkdirSync(responsesDir, { recursive: true });
-                    const responseFile = path.join(
-                      responsesDir,
-                      `${data.requestId}.json`,
-                    );
-                    const tempFile = `${responseFile}.tmp`;
-                    fs.writeFileSync(
-                      tempFile,
-                      JSON.stringify(
-                        { requestId: data.requestId, result },
-                        null,
-                        2,
-                      ),
-                    );
-                    fs.renameSync(tempFile, responseFile);
-                    logger.info(
-                      {
-                        sourceGroup,
-                        requestId: data.requestId,
-                        eventId: data.eventId,
-                      },
-                      'IPC calendar event updated',
-                    );
-                  } catch (err) {
-                    logger.error(
-                      { sourceGroup, requestId: data.requestId, err },
-                      'IPC calendar event update failed',
-                    );
-                    const responsesDir = path.join(
-                      ipcBaseDir,
-                      sourceGroup,
-                      'responses',
-                    );
-                    fs.mkdirSync(responsesDir, { recursive: true });
-                    fs.writeFileSync(
-                      path.join(responsesDir, `${data.requestId}.json`),
-                      JSON.stringify({
-                        requestId: data.requestId,
-                        error: err instanceof Error ? err.message : String(err),
-                      }),
-                    );
-                  }
+                const handler = REQUEST_HANDLERS.find(
+                  (h) => h.type === data.type,
+                )!;
+                await dispatchRequestVerb(
+                  handler,
+                  data,
+                  isMain,
+                  sourceGroup,
+                  ipcBaseDir,
+                );
               } else if (data.type === 'message' && data.chatJid && data.text) {
                 // Authorization: verify this group can send to this chatJid
                 const targetGroup = registeredGroups[data.chatJid];

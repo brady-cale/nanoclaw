@@ -9,7 +9,7 @@ store/
 data/
 logs/
 
-# Groups - only track base structure and specific CLAUDE.md files
+# Groups - only track base structure, CLAUDE.md, and installed-tools
 groups/*
 !groups/main/
 !groups/global/
@@ -17,10 +17,14 @@ groups/main/*
 groups/global/*
 !groups/main/CLAUDE.md
 !groups/global/CLAUDE.md
+!groups/global/installed-tools/
 
 # Secrets
 *.keys.json
 .env
+
+# direnv (per-developer convenience, not shared)
+.envrc
 
 # SQLite databases
 *.db
@@ -38,4 +42,9 @@ groups/global/*
 # Skills system (local per-installation state)
 .nanoclaw/
 
+# App build output
+app/build/
+
 agents-sdk-docs
+
+.ai

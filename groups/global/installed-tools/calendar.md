@@ -1,0 +1,5 @@
+### Calendar (M365)
+
+- **`mcp__nanoclaw__search_calendar`** — Search calendar events by date range. Params: `after` (required, ISO date), `before` (required, ISO date), `query` (optional, filter by subject), `attendee` (optional, filter by email), `top` (optional, max 50). Returns event ID, subject, time, location, attendees, Teams link.
+- **`mcp__nanoclaw__create_calendar_event`** — Create a new calendar event. Params: `subject` (required), `start` (required, local time), `end` (required, local time), `attendees` (optional, email array — they'll receive invites), `body` (optional), `location` (optional), `is_teams_meeting` (optional, creates Teams link), `is_all_day` (optional).
+- **`mcp__nanoclaw__update_calendar_event`** — Update an existing event by ID. Params: `event_id` (required, from search results), plus any fields to change: `subject`, `start`, `end`, `attendees` (full replacement list — include existing + new), `body`, `location`, `is_teams_meeting`.

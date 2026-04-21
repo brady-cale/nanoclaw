@@ -14,10 +14,10 @@
  *   Final marker after loop ends signals completion.
  */
 
-import fs from 'fs';
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
 import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
-import { fileURLToPath } from 'url';
+import { fileURLToPath } from 'node:url';
 
 interface ContainerInput {
   prompt: string;
@@ -63,7 +63,7 @@ const IPC_POLL_MS = 500;
  * Keeps the iterable alive until end() is called, preventing isSingleUserTurn.
  */
 class MessageStream {
-  private queue: SDKUserMessage[] = [];
+  private readonly queue: SDKUserMessage[] = [];
   private waiting: (() => void) | null = null;
   private done = false;
 
@@ -187,8 +187,8 @@ function createPreCompactHook(assistantName?: string): HookCallback {
 function sanitizeFilename(summary: string): string {
   return summary
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
+    .replaceAll(/[^a-z0-9]+/g, '-')
+    .replaceAll(/^-+|-+$/g, '')
     .slice(0, 50);
 }
 
@@ -202,29 +202,37 @@ interface ParsedMessage {
   content: string;
 }
 
+function extractMessageText(entry: { type: string; message?: { content?: unknown } }): ParsedMessage | null {
+  const content = entry.message?.content;
+  if (!content) return null;
+
+  if (entry.type === 'user') {
+    const text = typeof content === 'string'
+      ? content
+      : (content as { text?: string }[]).map(c => c.text || '').join('');
+    return text ? { role: 'user', content: text } : null;
+  }
+
+  if (entry.type === 'assistant') {
+    const text = (content as { type: string; text: string }[])
+      .filter(c => c.type === 'text')
+      .map(c => c.text)
+      .join('');
+    return text ? { role: 'assistant', content: text } : null;
+  }
+
+  return null;
+}
+
 function parseTranscript(content: string): ParsedMessage[] {
   const messages: ParsedMessage[] = [];
-
   for (const line of content.split('\n')) {
     if (!line.trim()) continue;
     try {
-      const entry = JSON.parse(line);
-      if (entry.type === 'user' && entry.message?.content) {
-        const text = typeof entry.message.content === 'string'
-          ? entry.message.content
-          : entry.message.content.map((c: { text?: string }) => c.text || '').join('');
-        if (text) messages.push({ role: 'user', content: text });
-      } else if (entry.type === 'assistant' && entry.message?.content) {
-        const textParts = entry.message.content
-          .filter((c: { type: string }) => c.type === 'text')
-          .map((c: { text: string }) => c.text);
-        const text = textParts.join('');
-        if (text) messages.push({ role: 'assistant', content: text });
-      }
-    } catch {
-    }
+      const parsed = extractMessageText(JSON.parse(line));
+      if (parsed) messages.push(parsed);
+    } catch { /* skip malformed lines */ }
   }
-
   return messages;
 }
 
@@ -238,21 +246,21 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
     hour12: true
   });
 
-  const lines: string[] = [];
-  lines.push(`# ${title || 'Conversation'}`);
-  lines.push('');
-  lines.push(`Archived: ${formatDateTime(now)}`);
-  lines.push('');
-  lines.push('---');
-  lines.push('');
+  const lines: string[] = [
+    `# ${title || 'Conversation'}`,
+    '',
+    `Archived: ${formatDateTime(now)}`,
+    '',
+    '---',
+    '',
+  ];
 
   for (const msg of messages) {
     const sender = msg.role === 'user' ? 'User' : (assistantName || 'Assistant');
     const content = msg.content.length > 2000
       ? msg.content.slice(0, 2000) + '...'
       : msg.content;
-    lines.push(`**${sender}**: ${content}`);
-    lines.push('');
+    lines.push(`**${sender}**: ${content}`, '');
   }
 
   return lines.join('\n');
@@ -323,6 +331,178 @@ function waitForIpcMessage(): Promise<string | null> {
   });
 }
 
+type ToolUseBlock = { type: string; name?: string; input?: Record<string, unknown> };
+type AssistantMessageLike = { message?: { content?: ToolUseBlock[] } };
+
+/** Log tool use details — especially web calls and browser actions. */
+function logToolUseDetails(msg: AssistantMessageLike): void {
+  for (const block of msg.message?.content || []) {
+    if (block.type !== 'tool_use' || !block.name || !block.input) continue;
+    const inp = (key: string) => String(block.input![key] ?? '');
+    switch (block.name) {
+      case 'WebSearch':
+        log(`[tool] WebSearch query="${inp('query')}"`);
+        break;
+      case 'WebFetch':
+        log(`[tool] WebFetch url="${inp('url')}"`);
+        break;
+      case 'Bash': {
+        const cmd = inp('command');
+        log(cmd.startsWith('agent-browser')
+          ? `[tool] Bash agent-browser: ${cmd}`
+          : `[tool] Bash: ${cmd.slice(0, 200)}`);
+        break;
+      }
+      default:
+        log(`[tool] ${block.name}`);
+    }
+  }
+}
+
+/** Build MCP server config from environment. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildMcpServers(mcpServerPath: string, containerInput: ContainerInput): any {
+  const servers: Record<string, unknown> = {
+    nanoclaw: {
+      command: 'node',
+      args: [mcpServerPath],
+      env: {
+        NANOCLAW_CHAT_JID: containerInput.chatJid,
+        NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+        NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+      },
+    },
+  };
+  if (process.env.ATLASSIAN_BASE_URL) {
+    servers.atlassian = {
+      command: 'node',
+      args: ['/app/node_modules/mcp-atlassian/dist/index.js'],
+      env: {
+        ATLASSIAN_BASE_URL: process.env.ATLASSIAN_BASE_URL,
+        ATLASSIAN_EMAIL: process.env.ATLASSIAN_EMAIL || '',
+        ATLASSIAN_API_TOKEN: process.env.ATLASSIAN_API_TOKEN || '',
+      },
+    };
+  }
+  if (process.env.GITHUB_TOKEN) {
+    servers.github = {
+      type: 'http' as const,
+      url: 'https://api.githubcopilot.com/mcp',
+      headers: { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` },
+    };
+  }
+  return servers;
+}
+
+/** Discover extra directories mounted at /workspace/extra/* */
+function discoverExtraDirs(): string[] {
+  const extraBase = '/workspace/extra';
+  if (!fs.existsSync(extraBase)) return [];
+  const dirs = fs.readdirSync(extraBase)
+    .map(entry => path.join(extraBase, entry))
+    .filter(fullPath => fs.statSync(fullPath).isDirectory());
+  if (dirs.length > 0) log(`Additional directories: ${dirs.join(', ')}`);
+  return dirs;
+}
+
+/** Load global CLAUDE.md content if it exists. */
+function loadGlobalClaudeMd(): string | undefined {
+  const p = '/workspace/global/CLAUDE.md';
+  return fs.existsSync(p) ? fs.readFileSync(p, 'utf-8') : undefined;
+}
+
+const ALLOWED_TOOLS = [
+  'Bash',
+  'Read', 'Write', 'Edit', 'Glob', 'Grep',
+  'WebSearch', 'WebFetch',
+  'Task', 'TaskOutput', 'TaskStop',
+  'TeamCreate', 'TeamDelete', 'SendMessage',
+  'TodoWrite', 'ToolSearch', 'Skill',
+  'NotebookEdit',
+  'mcp__nanoclaw__*',
+  'mcp__atlassian__*',
+  // GitHub: read-only (no push, merge, create, delete, write)
+  'mcp__github__get_me',
+  'mcp__github__search_code',
+  'mcp__github__search_repositories',
+  'mcp__github__search_issues',
+  'mcp__github__search_pull_requests',
+  'mcp__github__search_users',
+  'mcp__github__get_file_contents',
+  'mcp__github__list_commits',
+  'mcp__github__get_commit',
+  'mcp__github__list_branches',
+  'mcp__github__list_pull_requests',
+  'mcp__github__pull_request_read',
+  'mcp__github__list_issues',
+  'mcp__github__issue_read',
+  'mcp__github__list_releases',
+  'mcp__github__get_latest_release',
+  'mcp__github__get_release_by_tag',
+  'mcp__github__list_tags',
+  'mcp__github__get_tag',
+  'mcp__github__get_teams',
+  'mcp__github__get_team_members',
+  'mcp__github__get_label',
+  'mcp__github__get_copilot_job_status',
+];
+
+type QueryState = { newSessionId: string | undefined; lastAssistantUuid: string | undefined };
+
+/** Build SDK query options. */
+function buildQueryOptions(
+  sessionId: string | undefined,
+  resumeAt: string | undefined,
+  globalClaudeMd: string | undefined,
+  extraDirs: string[],
+  sdkEnv: Record<string, string | undefined>,
+  mcpServerPath: string,
+  containerInput: ContainerInput,
+) {
+  return {
+    cwd: '/workspace/group',
+    additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
+    resume: sessionId,
+    resumeSessionAt: resumeAt,
+    systemPrompt: globalClaudeMd
+      ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
+      : undefined,
+    allowedTools: ALLOWED_TOOLS,
+    env: sdkEnv,
+    permissionMode: 'bypassPermissions' as const,
+    allowDangerouslySkipPermissions: true,
+    settingSources: ['project' as const, 'user' as const],
+    mcpServers: buildMcpServers(mcpServerPath, containerInput),
+    hooks: {
+      PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
+    },
+  };
+}
+
+/** Process a single SDK message, updating state and emitting output as needed. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function handleMessage(message: any, state: QueryState): void {
+  if (message.type === 'assistant' && 'uuid' in message) {
+    state.lastAssistantUuid = message.uuid;
+  }
+  if (message.type === 'assistant' && 'message' in message) {
+    logToolUseDetails(message as AssistantMessageLike);
+  }
+  if (message.type === 'system' && message.subtype === 'init') {
+    state.newSessionId = message.session_id;
+    log(`Session initialized: ${state.newSessionId}`);
+  }
+  if (message.type === 'system' && message.subtype === 'task_notification') {
+    log(`Task notification: task=${message.task_id} status=${message.status} summary=${message.summary}`);
+  }
+  if (message.type === 'result') {
+    const textResult = 'result' in message ? message.result : null;
+    const preview = textResult ? ' text=' + String(textResult).slice(0, 200) : '';
+    log(`Result: subtype=${message.subtype}${preview}`);
+    writeOutput({ status: 'success', result: textResult || null, newSessionId: state.newSessionId });
+  }
+}
+
 /**
  * Run a single query and stream results via writeOutput.
  * Uses MessageStream (AsyncIterable) to keep isSingleUserTurn=false,
@@ -361,145 +541,75 @@ async function runQuery(
   };
   setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
 
-  let newSessionId: string | undefined;
-  let lastAssistantUuid: string | undefined;
+  const state = { newSessionId: undefined as string | undefined, lastAssistantUuid: undefined as string | undefined };
   let messageCount = 0;
-  let resultCount = 0;
 
-  // Load global CLAUDE.md as additional system context (shared across all groups)
-  const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
-  let globalClaudeMd: string | undefined;
-  if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
-    globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
-  }
+  const globalClaudeMd = loadGlobalClaudeMd();
+  const extraDirs = discoverExtraDirs();
 
-  // Discover additional directories mounted at /workspace/extra/*
-  // These are passed to the SDK so their CLAUDE.md files are loaded automatically
-  const extraDirs: string[] = [];
-  const extraBase = '/workspace/extra';
-  if (fs.existsSync(extraBase)) {
-    for (const entry of fs.readdirSync(extraBase)) {
-      const fullPath = path.join(extraBase, entry);
-      if (fs.statSync(fullPath).isDirectory()) {
-        extraDirs.push(fullPath);
-      }
-    }
-  }
-  if (extraDirs.length > 0) {
-    log(`Additional directories: ${extraDirs.join(', ')}`);
-  }
+  const queryOptions = buildQueryOptions(
+    sessionId, resumeAt, globalClaudeMd, extraDirs, sdkEnv,
+    mcpServerPath, containerInput,
+  );
 
-  for await (const message of query({
-    prompt: stream,
-    options: {
-      cwd: '/workspace/group',
-      additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
-      resume: sessionId,
-      resumeSessionAt: resumeAt,
-      systemPrompt: globalClaudeMd
-        ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
-        : undefined,
-      allowedTools: [
-        'Bash',
-        'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'WebSearch', 'WebFetch',
-        'Task', 'TaskOutput', 'TaskStop',
-        'TeamCreate', 'TeamDelete', 'SendMessage',
-        'TodoWrite', 'ToolSearch', 'Skill',
-        'NotebookEdit',
-        'mcp__nanoclaw__*',
-        'mcp__atlassian__*'
-      ],
-      env: sdkEnv,
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
-      settingSources: ['project', 'user'],
-      mcpServers: {
-        nanoclaw: {
-          command: 'node',
-          args: [mcpServerPath],
-          env: {
-            NANOCLAW_CHAT_JID: containerInput.chatJid,
-            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
-          },
-        },
-        ...(process.env.ATLASSIAN_BASE_URL ? {
-          atlassian: {
-            command: 'node',
-            args: ['/app/node_modules/mcp-atlassian/dist/index.js'],
-            env: {
-              ATLASSIAN_BASE_URL: process.env.ATLASSIAN_BASE_URL,
-              ATLASSIAN_EMAIL: process.env.ATLASSIAN_EMAIL || '',
-              ATLASSIAN_API_TOKEN: process.env.ATLASSIAN_API_TOKEN || '',
-            },
-          },
-        } : {}),
-      },
-      hooks: {
-        PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
-      },
-    }
-  })) {
+  for await (const message of query({ prompt: stream, options: queryOptions })) {
     messageCount++;
     const msgType = message.type === 'system' ? `system/${(message as { subtype?: string }).subtype}` : message.type;
     log(`[msg #${messageCount}] type=${msgType}`);
-
-    if (message.type === 'assistant' && 'uuid' in message) {
-      lastAssistantUuid = (message as { uuid: string }).uuid;
-    }
-
-    // Log tool use details — especially web calls and browser actions
-    if (message.type === 'assistant' && 'message' in message) {
-      const assistantMsg = message as { message?: { content?: Array<{ type: string; name?: string; input?: Record<string, unknown> }> } };
-      for (const block of assistantMsg.message?.content || []) {
-        if (block.type === 'tool_use' && block.name && block.input) {
-          if (block.name === 'WebSearch') {
-            log(`[tool] WebSearch query="${block.input.query || ''}"`);
-          } else if (block.name === 'WebFetch') {
-            log(`[tool] WebFetch url="${block.input.url || ''}"`);
-          } else if (block.name === 'Bash') {
-            const cmd = String(block.input.command || '');
-            if (cmd.startsWith('agent-browser')) {
-              log(`[tool] Bash agent-browser: ${cmd}`);
-            } else {
-              log(`[tool] Bash: ${cmd.slice(0, 200)}`);
-            }
-          } else {
-            log(`[tool] ${block.name}`);
-          }
-        }
-      }
-    }
-
-    if (message.type === 'system' && message.subtype === 'init') {
-      newSessionId = message.session_id;
-      log(`Session initialized: ${newSessionId}`);
-    }
-
-    if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
-      const tn = message as { task_id: string; status: string; summary: string };
-      log(`Task notification: task=${tn.task_id} status=${tn.status} summary=${tn.summary}`);
-    }
-
-    if (message.type === 'result') {
-      resultCount++;
-      const textResult = 'result' in message ? (message as { result?: string }).result : null;
-      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
-      writeOutput({
-        status: 'success',
-        result: textResult || null,
-        newSessionId
-      });
-    }
+    handleMessage(message, state);
   }
 
   ipcPolling = false;
-  log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
-  return { newSessionId, lastAssistantUuid, closedDuringQuery };
+  log(`Query done. Messages: ${messageCount}, lastAssistantUuid: ${state.lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
+  return { newSessionId: state.newSessionId, lastAssistantUuid: state.lastAssistantUuid, closedDuringQuery };
 }
 
-async function main(): Promise<void> {
+/** Query loop: run query → wait for IPC message → run new query → repeat. */
+async function runQueryLoop(
+  initialPrompt: string,
+  initialSessionId: string | undefined,
+  mcpServerPath: string,
+  containerInput: ContainerInput,
+  sdkEnv: Record<string, string | undefined>,
+): Promise<void> {
+  let prompt = initialPrompt;
+  let sessionId = initialSessionId;
+  let resumeAt: string | undefined;
+
+  try {
+    while (true) {
+      log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
+
+      const result = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+      if (result.newSessionId) sessionId = result.newSessionId;
+      if (result.lastAssistantUuid) resumeAt = result.lastAssistantUuid;
+
+      if (result.closedDuringQuery) {
+        log('Close sentinel consumed during query, exiting');
+        break;
+      }
+
+      writeOutput({ status: 'success', result: null, newSessionId: sessionId });
+      log('Query ended, waiting for next IPC message...');
+
+      const nextMessage = await waitForIpcMessage();
+      if (nextMessage === null) {
+        log('Close sentinel received, exiting');
+        break;
+      }
+
+      log(`Got new message (${nextMessage.length} chars), starting new query`);
+      prompt = nextMessage;
+    }
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    log(`Agent error: ${errorMessage}`);
+    writeOutput({ status: 'error', result: null, newSessionId: sessionId, error: errorMessage });
+    process.exit(1);
+  }
+}
+
+async function run(): Promise<void> {
   let containerInput: ContainerInput;
 
   try {
@@ -540,54 +650,7 @@ async function main(): Promise<void> {
     prompt += '\n' + pending.join('\n');
   }
 
-  // Query loop: run query → wait for IPC message → run new query → repeat
-  let resumeAt: string | undefined;
-  try {
-    while (true) {
-      log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
-
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
-      if (queryResult.newSessionId) {
-        sessionId = queryResult.newSessionId;
-      }
-      if (queryResult.lastAssistantUuid) {
-        resumeAt = queryResult.lastAssistantUuid;
-      }
-
-      // If _close was consumed during the query, exit immediately.
-      // Don't emit a session-update marker (it would reset the host's
-      // idle timer and cause a 30-min delay before the next _close).
-      if (queryResult.closedDuringQuery) {
-        log('Close sentinel consumed during query, exiting');
-        break;
-      }
-
-      // Emit session update so host can track it
-      writeOutput({ status: 'success', result: null, newSessionId: sessionId });
-
-      log('Query ended, waiting for next IPC message...');
-
-      // Wait for the next message or _close sentinel
-      const nextMessage = await waitForIpcMessage();
-      if (nextMessage === null) {
-        log('Close sentinel received, exiting');
-        break;
-      }
-
-      log(`Got new message (${nextMessage.length} chars), starting new query`);
-      prompt = nextMessage;
-    }
-  } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    log(`Agent error: ${errorMessage}`);
-    writeOutput({
-      status: 'error',
-      result: null,
-      newSessionId: sessionId,
-      error: errorMessage
-    });
-    process.exit(1);
-  }
+  await runQueryLoop(prompt, sessionId, mcpServerPath, containerInput, sdkEnv);
 }
 
-main();
+await run();

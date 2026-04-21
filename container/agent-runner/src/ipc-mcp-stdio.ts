@@ -699,6 +699,62 @@ Examples:
   },
 );
 
+server.tool(
+  'gcloud_command',
+  `Run a read-only gcloud CLI command on the host. The host has the GCP credentials — this container does not. The host validates the command against a read-only verb allowlist and blocks known exfiltration paths (auth tokens, secret access).
+
+Pass "command" as an array of gcloud args WITHOUT the leading "gcloud" (it's implied).
+
+Only list/describe/read/get/search-style verbs are allowed. create, update, delete, set, deploy, etc. are blocked — both by this filter and (expected) by the service-account IAM scope.
+
+Examples:
+- List Cloud Run services: gcloud_command(command: ["run", "services", "list", "--region=us-central1"])
+- Read logs: gcloud_command(command: ["logging", "read", "severity>=ERROR", "--limit=20", "--format=json"])
+- Describe a VM: gcloud_command(command: ["compute", "instances", "describe", "my-vm", "--zone=us-central1-a"])
+- List Cloud Build history: gcloud_command(command: ["builds", "list", "--limit=10"])`,
+  {
+    command: z.array(z.string()).describe('gcloud CLI args (do NOT include the leading "gcloud")'),
+    project_id: z.string().optional().describe('Override the default GCP project for this command'),
+  },
+  async (args) => {
+    const requestId = `gcloud-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    writeIpcFile(MESSAGES_DIR, {
+      type: 'gcloud_command',
+      requestId,
+      command: args.command,
+      projectId: args.project_id,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+
+    const responseFile = path.join(RESPONSES_DIR, `${requestId}.json`);
+    const timeout = 90_000; // gcloud can be slow on first call per session
+    const interval = 500;
+    const start = Date.now();
+
+    while (Date.now() - start < timeout) {
+      if (fs.existsSync(responseFile)) {
+        try {
+          const response = JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
+          try { fs.unlinkSync(responseFile); } catch {}
+          if (response.error) {
+            return { content: [{ type: 'text' as const, text: `gcloud error: ${response.error}` }], isError: true };
+          }
+          const r = response.result as { stdout: string; stderr: string; exitCode: number };
+          const parts: string[] = [];
+          if (r.stdout) parts.push(`stdout:\n${r.stdout}`);
+          if (r.stderr) parts.push(`stderr:\n${r.stderr}`);
+          if (r.exitCode !== 0) parts.push(`exit code: ${r.exitCode}`);
+          return { content: [{ type: 'text' as const, text: parts.join('\n\n') || '(no output)' }] };
+        } catch { /* partial write, retry */ }
+      }
+      await new Promise((resolve) => setTimeout(resolve, interval));
+    }
+
+    return { content: [{ type: 'text' as const, text: 'gcloud command timed out.' }], isError: true };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);
